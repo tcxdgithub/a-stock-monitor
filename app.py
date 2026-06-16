@@ -1,7 +1,8 @@
-import json, subprocess, threading, time, re, os, csv, datetime
+import json, subprocess, threading, time, re, os, csv, datetime, platform
 from flask import Flask, render_template, jsonify, request
 
 app = Flask(__name__)
+IS_WINDOWS = platform.system() == "Windows"
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -11,7 +12,8 @@ _ready = threading.Event()
 
 
 def _curl(url, headers=None, enc="utf-8"):
-    cmd = ["curl.exe", "-s", "-m", "10", "--ipv4", url]
+    curl_bin = "curl.exe" if IS_WINDOWS else "curl"
+    cmd = [curl_bin, "-s", "-m", "10", "--ipv4", url]
     if headers:
         for h in headers:
             cmd += ["-H", h]
