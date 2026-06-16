@@ -107,6 +107,24 @@ def _loop():
         time.sleep(300)
 
 
+@app.route("/api/debug")
+def debug():
+    """调试接口，检查API连通性"""
+    import platform
+    test_urls = {
+        "sina": "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/MoneyFlow.ssl_bkzj_bk?page=1&num=5&sort=netamount&asc=0&fenlei=0",
+        "tencent": "https://qt.gtimg.cn/q=sh600519",
+    }
+    results = {}
+    for name, url in test_urls.items():
+        try:
+            raw = _curl(url, enc="gbk" if name == "tencent" else "utf-8")
+            results[name] = {"ok": bool(raw), "length": len(raw), "sample": raw[:100] if raw else "empty"}
+        except Exception as e:
+            results[name] = {"ok": False, "error": str(e)}
+    return jsonify({"platform": platform.system(), "tests": results})
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
