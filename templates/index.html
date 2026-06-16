@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>A股资金流向</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0f172a;color:#e2e8f0;font-family:system-ui,-apple-system,sans-serif}
+.hd{text-align:center;padding:14px 0 6px;border-bottom:1px solid #1e293b}
+.hd h1{font-size:22px;color:#3b82f6;letter-spacing:3px}
+.hd small{color:#64748b;font-size:12px}
+.tabs{display:flex;justify-content:center;gap:8px;padding:10px 0}
+.tabs button{padding:6px 22px;border:1px solid #334155;border-radius:6px;background:#1e293b;color:#94a3b8;cursor:pointer;font-size:13px}
+.tabs button.on{background:#1e40af;color:#fff;border-color:#3b82f6}
+.wrap{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:0 14px 14px}
+.card{background:#1e293b;border-radius:8px;padding:10px;min-height:420px}
+.card h3{font-size:13px;color:#60a5fa;border-left:3px solid #3b82f6;padding-left:8px;margin-bottom:8px}
+.box{width:100%;height:380px}
+.tbl{max-height:370px;overflow-y:auto;font-size:12px}
+.tbl::-webkit-scrollbar{width:3px}
+.tbl::-webkit-scrollbar-thumb{background:#475569;border-radius:2px}
+table{width:100%;border-collapse:collapse}
+th{color:#64748b;text-align:left;padding:5px 3px;border-bottom:1px solid #334155}
+td{padding:4px 3px;border-bottom:1px solid #1e293b}
+tr:hover{background:#334155}
+.cup{color:#ef4444}.cdn{color:#22c55e}
+#ld{position:fixed;inset:0;background:#0f172a;z-index:99;display:flex;flex-direction:column;align-items:center;justify-content:center}
+#ld h2{color:#3b82f6;margin-bottom:10px}
+#ld p{color:#94a3b8;font-size:13px}
+.bar{margin-top:14px;width:160px;height:3px;background:#334155;border-radius:2px;overflow:hidden}
+.bar i{display:block;width:30%;height:100%;background:#3b82f6;border-radius:2px;animation:la 1.5s ease-in-out infinite}
+@keyframes la{0%{margin-left:0;width:10%}50%{width:60%}100%{margin-left:90%;width:10%}}
+.sug-item:hover{background:#334155!important}
+</style>
+</head>
+<body>
+<div id="ld"><h2>A股资金流向</h2><p id="ltxt">加载中...</p><div class="bar"><i></i></div></div>
+
+<div class="hd"><h1>A股资金流向监控</h1><small id="tm"></small></div>
+<div class="tabs" id="tabs">
+<button class="on" data-t="sector">行业板块</button>
+<button data-t="concept">概念板块</button>
+<button data-t="stock">热门个股</button>
+<button data-t="analyze">个股分析</button>
+<button data-t="history">历史记录</button>
+</div>
+
+<div class="wrap" id="p-sector"></div>
+<div id="p-predict-sector" style="margin:0 14px 14px;background:#1e293b;border-radius:8px;padding:10px;min-height:80px"></div>
+<div class="wrap" id="p-concept" style="display:none"></div>
+<div id="p-predict-concept" style="display:none;margin:0 14px 14px;background:#1e293b;border-radius:8px;padding:10px;min-height:80px"></div>
+<div class="wrap" id="p-stock" style="display:none"></div>
+<div id="p-predict-stock" style="display:none;margin:0 14px 14px;background:#1e293b;border-radius:8px;padding:10px;min-height:80px"></div>
+<div id="p-analyze" style="display:none;padding:0 14px 14px"></div>
+<div id="p-history" style="display:none;padding:0 14px 14px"></div>
+
+<script>
+const F=v=>{if(v==null||isNaN(v))return'--';let a=Math.abs(v);if(a>=1e12)return(v/1e12).toFixed(2)+'万亿';if(a>=1e8)return(v/1e8).toFixed(2)+'亿';if(a>=1e4)return(v/1e4).toFixed(2)+'万';return v.toFixed(2)};
+const P=v=>v==null?'--':v.toFixed(2)+'%';
+const C=v=>v>=0?'cup':'cdn';
+setInterval(()=>{document.getElementById('tm').textContent=new Date().toLocaleString('zh-CN')},1000);
+document.getElementById('tm').textContent=new Date().toLocaleString('zh-CN');
+
+document.getElementById('tabs').onclick=e=>{
+  if(e.target.tagName!=='BUTTON')return;
+  document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('on'));
+  e.target.classList.add('on');
+  const t=e.target.dataset.t;
+  ['sector','concept','stock','analyze','history'].forEach(n=>{
+    const el=document.getElementById('p-'+n);
+    if(el)el.style.display=n===t?'':'none';
+    const pred=document.getElementById('p-predict-'+n);
+    if(pred)pred.style.display=n===t?'':'none';
+  });
+  if(!window['done_'+t]){window['done_'+t]=1;window['load_'+t]?window['load_'+t]():0}
+  setTimeout(()=>window.dispatchEvent(new Event('resize')),50);
+};
+
+function mkChart(id){return echarts.init(document.getElementById(id),'dark')}
+function mkPanel(title,chartFn,tableFn,id){
+  document.getElementById(id).innerHTML=`<div class="card"><h3>${title} 净流入 TOP15</h3><div class="box" id="c-${id}"></div></div><div class="card"><h3>${title} 明细</h3><div class="tbl" id="t-${id}"></div></div>`;
+  chartFn('c-'+id);
+  tableFn('t-'+id);
+}
+
+/* 行业 */
+window.load_sector=async()=>{
+  const d=(await(await fetch('/api/sector_flow')).json()).data;
+  if(!d.length)return;
+  const top15=d.slice(0,15).sort((a,b)=>a.net_inflow-b.net_inflow);
+  mkPanel('行业',cid=>{
+    mkChart(cid).setOption({tooltip:{trigger:'axis'},grid:{left:90,right:45,top:5,bottom:5},xAxis:{type:'value',axisLabel:{formatter:F},splitLine:{lineStyle:{color:'#334155'}}},yAxis:{type:'category',data:top15.map(x=>x.name),axisLabel:{color:'#e2e8f0',fontSize:11}},series:[{type:'bar',data:top15.map(x=>({value:x.net_inflow,itemStyle:{color:x.net_inflow>=0?'#ef4444':'#22c55e'}})),label:{show:true,position:'right',formatter:p=>F(p.value),color:'#e2e8f0',fontSize:10}}]});
+  },tid=>{
+    let h='<table><tr><th>板块</th><th>净流入</th><th>流入</th><th>流出</th><th>领涨</th><th>涨幅</th></tr>';
+    d.forEach(x=>h+=`<tr><td>${x.name}</td><td class="${C(x.net_inflow)}">${F(x.net_inflow)}</td><td class="cup">${F(x.in_amount)}</td><td class="cdn">${F(x.out_amount)}</td><td>${x.top_stock}</td><td class="${C(x.top_change)}">${P(x.top_change)}</td></tr>`);
+    document.getElementById(tid).innerHTML=h+'</table>';
+  },'p-sector');
+
+  // 加载板块预测
+  loadSectorPredict('0','p-predict-sector');
+};
+
+async function loadSectorPredict(fenlei, targetId){
+  const el=document.getElementById(targetId||'p-predict-sector');
+  if(!el)return;
+  el.innerHTML='<div style="text-align:center;color:#64748b;padding:15px">预测分析中...</div>';
+  try{
+    const r=await fetch('/api/sector_predict?fenlei='+fenlei);
+    const j=await r.json();
+    if(j.code!==0||!j.data.length){
+      el.innerHTML='<div style="text-align:center;color:#64748b;padding:15px">暂无预测信号</div>';return;
+    }
+    const colors={"超跌反弹":"#22c55e","底部吸筹":"#3b82f6","主力试盘":"#a855f7","强势蓄力":"#ef4444","洗盘信号":"#f59e0b"};
+    let h='<div style="color:#64748b;font-size:12px;margin-bottom:6px">明日资金可能流向</div><table><tr><th>类型</th><th>板块</th><th>强度</th><th>可信度</th><th>领涨</th><th>净流入</th><th>依据</th></tr>';
+    j.data.forEach(x=>{
+      const c=colors[x.type]||'#94a3b8';
+      h+=`<tr>
+        <td style="color:${c};font-weight:bold">${x.type}</td>
+        <td>${x.name}</td>
+        <td><div style="background:#0f172a;border-radius:4px;height:14px;width:80px;display:inline-block;vertical-align:middle"><div style="background:${c};height:100%;width:${Math.min(100,x.score)}%;border-radius:4px"></div></div> <span style="font-size:10px">${x.score}</span></td>
+        <td style="color:${x.confidence==='高'?'#22c55e':'#f59e0b'};font-size:12px">${x.confidence}</td>
+        <td style="font-size:12px">${x.top_stock}</td>
+        <td class="${C(x.net_inflow)}" style="font-size:12px">${F(x.net_inflow)}</td>
+        <td style="font-size:11px;color:#94a3b8;max-width:180px">${x.reason}</td>
+      </tr>`;
+    });
+    el.innerHTML=h+'</table>';
+  }catch(e){el.innerHTML='<div style="color:#ef4444;padding:15px">请求失败</div>'}
+}
+
+/* 概念 */
+window.load_concept=async()=>{
+  const d=(await(await fetch('/api/concept_flow')).json()).data;
+  if(!d.length)return;
+  const top15=d.slice(0,15).sort((a,b)=>a.net_inflow-b.net_inflow);
+  mkPanel('概念',cid=>{
+    mkChart(cid).setOption({tooltip:{trigger:'axis'},grid:{left:100,right:45,top:5,bottom:5},xAxis:{type:'value',axisLabel:{formatter:F},splitLine:{lineStyle:{color:'#334155'}}},yAxis:{type:'category',data:top15.map(x=>x.name),axisLabel:{color:'#e2e8f0',fontSize:11}},series:[{type:'bar',data:top15.map(x=>({value:x.net_inflow,itemStyle:{color:x.net_inflow>=0?'#ef4444':'#22c55e'}})),label:{show:true,position:'right',formatter:p=>F(p.value),color:'#e2e8f0',fontSize:10}}]});
+  },tid=>{
+    let h='<table><tr><th>概念</th><th>净流入</th><th>流入</th><th>流出</th><th>领涨</th><th>涨幅</th></tr>';
+    d.forEach(x=>h+=`<tr><td>${x.name}</td><td class="${C(x.net_inflow)}">${F(x.net_inflow)}</td><td class="cup">${F(x.in_amount)}</td><td class="cdn">${F(x.out_amount)}</td><td>${x.top_stock}</td><td class="${C(x.top_change)}">${P(x.top_change)}</td></tr>`);
+    document.getElementById(tid).innerHTML=h+'</table>';
+  },'p-concept');
+
+  // 加载概念预测
+  loadSectorPredict('1','p-predict-concept');
+};
+
+/* 个股 */
+window.load_stock=async()=>{
+  const d=(await(await fetch('/api/stock_flow')).json()).data;
+  if(!d.length)return;
+  const top15=d.slice(0,15).sort((a,b)=>a.amount-b.amount);
+  mkPanel('个股',cid=>{
+    mkChart(cid).setOption({tooltip:{trigger:'axis'},grid:{left:80,right:45,top:5,bottom:5},xAxis:{type:'value',axisLabel:{formatter:F},splitLine:{lineStyle:{color:'#334155'}}},yAxis:{type:'category',data:top15.map(x=>x.name),axisLabel:{color:'#e2e8f0',fontSize:11}},series:[{type:'bar',data:top15.map(x=>({value:x.amount,itemStyle:{color:x.pct_change>=0?'#ef4444':'#22c55e'}})),label:{show:true,position:'right',formatter:p=>F(p.value),color:'#e2e8f0',fontSize:10}}]});
+  },tid=>{
+    let h='<table><tr><th>代码</th><th>名称</th><th>价格</th><th>涨跌%</th><th>成交额</th><th>换手%</th></tr>';
+    d.forEach(x=>h+=`<tr><td>${x.code}</td><td>${x.name}</td><td>${x.latest}</td><td class="${C(x.pct_change)}">${P(x.pct_change)}</td><td>${F(x.amount)}</td><td>${x.turnover}%</td></tr>`);
+    document.getElementById(tid).innerHTML=h+'</table>';
+  },'p-stock');
+
+  // 加载个股预测
+  loadStockPredict();
+};
+
+async function loadStockPredict(){
+  const el=document.getElementById('p-predict-stock');
+  if(!el)return;
+  el.innerHTML='<div style="text-align:center;color:#64748b;padding:15px">预测分析中...</div>';
+  try{
+    const r=await fetch('/api/stock_predict');
+    const j=await r.json();
+    if(j.code!==0||!j.data.length){
+      el.innerHTML='<div style="text-align:center;color:#64748b;padding:15px">暂无预测信号</div>';return;
+    }
+    const colors={"资金关注":"#3b82f6","底部吸筹":"#22c55e","强势启动":"#ef4444"};
+    let h='<div style="color:#64748b;font-size:12px;margin-bottom:6px">明日可能启动的个股</div><table><tr><th>类型</th><th>个股</th><th>强度</th><th>可信度</th><th>涨跌</th><th>成交额</th><th>依据</th></tr>';
+    j.data.forEach(x=>{
+      const c=colors[x.type]||'#94a3b8';
+      h+=`<tr>
+        <td style="color:${c};font-weight:bold">${x.type}</td>
+        <td>${x.name} <span style="color:#64748b;font-size:11px">${x.code}</span></td>
+        <td><div style="background:#0f172a;border-radius:4px;height:14px;width:80px;display:inline-block;vertical-align:middle"><div style="background:${c};height:100%;width:${Math.min(100,x.score)}%;border-radius:4px"></div></div> <span style="font-size:10px">${x.score}</span></td>
+        <td style="color:${x.confidence==='高'?'#22c55e':'#f59e0b'};font-size:12px">${x.confidence}</td>
+        <td class="${C(x.pct_change)}" style="font-size:12px">${P(x.pct_change)}</td>
+        <td style="font-size:12px">${F(x.amount)}</td>
+        <td style="font-size:11px;color:#94a3b8;max-width:180px">${x.reason}</td>
+      </tr>`;
+    });
+    el.innerHTML=h+'</table>';
+  }catch(e){el.innerHTML='<div style="color:#ef4444;padding:15px">请求失败</div>'}
+}
+
+/* 个股分析 */
+window.load_analyze=()=>{
+  const el=document.getElementById('p-analyze');
+  el.innerHTML=`
+  <div style="display:flex;gap:8px;justify-content:center;padding:10px 0;position:relative">
+    <div style="position:relative">
+      <input id="scode" placeholder="输入股票代码或名称 如 600519 茅台" autocomplete="off" style="width:280px;padding:8px 12px;border:1px solid #334155;border-radius:6px;background:#1e293b;color:#e2e8f0;font-size:14px;outline:none">
+      <div id="sug-box" style="display:none;position:absolute;top:100%;left:0;right:0;background:#1e293b;border:1px solid #334155;border-radius:0 0 6px 6px;max-height:240px;overflow-y:auto;z-index:50"></div>
+    </div>
+    <button id="sbtn" style="padding:8px 20px;background:#1e40af;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:14px">分析</button>
+  </div>
+  <div id="ares" style="margin-top:8px"></div>`;
+  document.getElementById('sbtn').onclick=doAnalyze;
+  const input=document.getElementById('scode');
+  input.onkeydown=e=>{if(e.key==='Enter'){
+    const sb=document.getElementById('sug-box');
+    const first=sb.querySelector('.sug-item');
+    if(first){first.click()}else{doAnalyze()}
+  }};
+  let timer=null;
+  input.oninput=()=>{
+    clearTimeout(timer);
+    const v=input.value.trim();
+    if(v.length<1){hideSug();return}
+    timer=setTimeout(()=>searchStock(v),250);
+  };
+  input.onblur=()=>setTimeout(hideSug,200);
+};
+
+let _searchTimer=null;
+async function searchStock(kw){
+  const sb=document.getElementById('sug-box');
+  if(!sb)return;
+  try{
+    const r=await fetch('/api/stock_name_search?kw='+encodeURIComponent(kw));
+    const j=await r.json();
+    if(j.code!==0||!j.data.length){sb.style.display='none';return}
+    let h='';
+    j.data.forEach(x=>{
+      h+=`<div class="sug-item" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid #334155;display:flex;justify-content:space-between" onmousedown="pickStock('${x.code}','${x.name}')">
+        <span style="color:#e2e8f0">${x.name}</span>
+        <span style="color:#64748b;font-size:12px">${x.market} ${x.code}</span>
+      </div>`;
+    });
+    sb.innerHTML=h;
+    sb.style.display='block';
+  }catch(e){sb.style.display='none'}
+}
+function hideSug(){const sb=document.getElementById('sug-box');if(sb)sb.style.display='none'}
+function pickStock(code,name){
+  document.getElementById('scode').value=code;
+  hideSug();
+  doAnalyze();
+}
+
+async function doAnalyze(){
+  const code=document.getElementById('scode').value.trim();
+  if(!code)return;
+  const el=document.getElementById('ares');
+  el.innerHTML='<div style="text-align:center;color:#64748b;padding:40px">分析中...</div>';
+  try{
+    const r=await fetch('/api/stock_search?code='+encodeURIComponent(code));
+    const j=await r.json();
+    if(j.code!==0){el.innerHTML=`<div style="color:#ef4444;padding:20px;text-align:center">${j.msg}</div>`;return}
+    renderAnalysis(j.data);
+  }catch(e){el.innerHTML='<div style="color:#ef4444;padding:20px;text-align:center">请求失败</div>'}
+}
+
+function renderAnalysis(d){
+  const a=d.analysis;
+  const html=`
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+    <div class="card">
+      <h3>${d.name} (${d.symbol}) K线 + 均线</h3>
+      <div class="box" id="ak-kline"></div>
+    </div>
+    <div class="card" style="display:flex;flex-direction:column;gap:8px">
+      <h3>行为识别</h3>
+      <div style="text-align:center;padding:8px">
+        <div style="font-size:28px;font-weight:bold;color:${a.behavior_color}">${a.behavior}</div>
+        <div style="color:#94a3b8;font-size:12px;margin-top:3px">${a.behavior_desc}</div>
+      </div>
+      <div style="display:flex;gap:6px;padding:0 6px">
+        <div style="flex:1;background:#0f172a;border-radius:6px;padding:6px;text-align:center">
+          <div style="color:#64748b;font-size:10px">吸筹</div>
+          <div style="font-size:16px;color:#ef4444">${a.score_xichou}%</div>
+        </div>
+        <div style="flex:1;background:#0f172a;border-radius:6px;padding:6px;text-align:center">
+          <div style="color:#64748b;font-size:10px">洗盘</div>
+          <div style="font-size:16px;color:#22c55e">${a.score_xipan}%</div>
+        </div>
+        <div style="flex:1;background:#0f172a;border-radius:6px;padding:6px;text-align:center">
+          <div style="color:#64748b;font-size:10px">出货</div>
+          <div style="font-size:16px;color:#f59e0b">${a.score_chuhuo||0}%</div>
+        </div>
+      </div>
+      <div style="padding:0 6px;font-size:11px">
+        <div style="color:#64748b;margin-bottom:3px">信号:</div>
+        ${(a.signals||[]).map(s=>{
+          const c=s.type==='吸筹'?'#ef4444':s.type==='洗盘'?'#22c55e':'#f59e0b';
+          return '<div style="padding:2px 0;color:#e2e8f0"><span style="color:'+c+';font-weight:bold">['+s.type+']</span> '+s.text+'</div>';
+        }).join('')||'<div style="color:#475569">暂无明显信号</div>'}
+      </div>
+      <div style="display:flex;gap:6px;padding:0 6px;font-size:11px">
+        <div style="flex:1;background:#0f172a;border-radius:6px;padding:5px;text-align:center">
+          <div style="color:#64748b">5日量比</div><div style="color:#e2e8f0">${a.vol_trend}x</div>
+        </div>
+        <div style="flex:1;background:#0f172a;border-radius:6px;padding:5px;text-align:center">
+          <div style="color:#64748b">5日涨幅</div><div class="${C(a.price_change_5d)}">${P(a.price_change_5d)}</div>
+        </div>
+        <div style="flex:1;background:#0f172a;border-radius:6px;padding:5px;text-align:center">
+          <div style="color:#64748b">20日涨幅</div><div class="${C(a.price_change_20d)}">${P(a.price_change_20d)}</div>
+        </div>
+        <div style="flex:1;background:#0f172a;border-radius:6px;padding:5px;text-align:center">
+          <div style="color:#64748b">回撤</div><div style="color:#f59e0b">${P(a.drawdown)}</div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>成交量 + 量价分析</h3>
+      <div class="box" id="ak-vol" style="height:260px"></div>
+      <div style="padding:4px 0;font-size:11px;max-height:110px;overflow-y:auto">
+        ${(a.vp_signals||[]).map(v=>{
+          const c=v.type.includes('涨')?'#ef4444':v.type.includes('跌')?'#22c55e':'#94a3b8';
+          return '<div style="padding:1px 0;color:#e2e8f0"><span style="color:#64748b">'+v.date+'</span> <span style="color:'+c+'">'+v.type+'</span> '+v.note+'</div>';
+        }).join('')}
+      </div>
+    </div>
+    <div class="card">
+      <h3>定制买卖点位</h3>
+      <div style="padding:2px 0;font-size:12px">
+        <div style="color:#ef4444;font-weight:bold;padding:4px 6px">卖出参考</div>
+        ${(d.sell_points||[]).map(p=>'<div style="display:flex;justify-content:space-between;padding:4px 6px;border-bottom:1px solid #0f172a"><span style="color:#e2e8f0">'+p.label+'</span><span style="color:#ef4444;font-weight:bold">'+p.price+'</span></div><div style="padding:0 6px 3px;font-size:10px;color:#64748b">'+p.reason+'</div>').join('')}
+        <div style="color:#22c55e;font-weight:bold;padding:8px 6px 4px">买入参考</div>
+        ${(d.buy_points||[]).map(p=>'<div style="display:flex;justify-content:space-between;padding:4px 6px;border-bottom:1px solid #0f172a"><span style="color:#e2e8f0">'+p.label+'</span><span style="color:#22c55e;font-weight:bold">'+p.price+'</span></div><div style="padding:0 6px 3px;font-size:10px;color:#64748b">'+p.reason+'</div>').join('')}
+        <div style="padding:6px;font-size:11px;color:#475569;border-top:1px solid #334155;margin-top:4px">
+          当前: <span style="color:#e2e8f0;font-weight:bold">${d.latest}</span> | 涨跌: <span class="${C(d.pct_change)}">${P(d.pct_change)}</span>
+        </div>
+      </div>
+    </div>
+  </div>`;
+  document.getElementById('ares').innerHTML=html;
+
+  setTimeout(()=>{
+    const k=d.kline;
+    const c=echarts.init(document.getElementById('ak-kline'),'dark');
+    c.setOption({
+      tooltip:{trigger:'axis'},
+      legend:{data:['K线','MA5','MA10','MA20'],textStyle:{color:'#94a3b8'},top:0},
+      grid:{left:55,right:15,top:28,bottom:18},
+      xAxis:{type:'category',data:k.map(x=>x.date),axisLabel:{color:'#64748b',fontSize:9,rotate:30}},
+      yAxis:{type:'value',scale:true,axisLabel:{color:'#64748b'},splitLine:{lineStyle:{color:'#1e293b'}}},
+      series:[
+        {name:'K线',type:'candlestick',data:k.map(x=>[x.open,x.close,x.low,x.high]),
+         itemStyle:{color:'#ef4444',color0:'#22c55e',borderColor:'#ef4444',borderColor0:'#22c55e'}},
+        {name:'MA5',type:'line',data:d.ma5,smooth:true,lineStyle:{width:1},itemStyle:{color:'#f59e0b'}},
+        {name:'MA10',type:'line',data:d.ma10,smooth:true,lineStyle:{width:1},itemStyle:{color:'#3b82f6'}},
+        {name:'MA20',type:'line',data:d.ma20,smooth:true,lineStyle:{width:1},itemStyle:{color:'#a855f7'}},
+      ]
+    });
+    const c2=echarts.init(document.getElementById('ak-vol'),'dark');
+    c2.setOption({
+      tooltip:{trigger:'axis'},
+      grid:{left:55,right:15,top:8,bottom:18},
+      xAxis:{type:'category',data:k.map(x=>x.date),axisLabel:{color:'#64748b',fontSize:9,rotate:30}},
+      yAxis:{type:'value',axisLabel:{color:'#64748b',formatter:v=>v>=1e4?(v/1e4).toFixed(0)+'万':v},splitLine:{lineStyle:{color:'#1e293b'}}},
+      series:[
+        {type:'bar',data:k.map(x=>({value:x.volume,itemStyle:{color:x.close>=x.open?'#ef4444':'#22c55e'}})),barWidth:'55%'},
+        {name:'VOL MA5',type:'line',data:d.vol_ma5,smooth:true,lineStyle:{width:1},itemStyle:{color:'#f59e0b'}},
+      ]
+    });
+    window.addEventListener('resize',()=>{c.resize();c2.resize()});
+  },50);
+}
+
+/* 历史记录 */
+window.load_history=()=>{
+  const el=document.getElementById('p-history');
+  el.innerHTML=`
+  <div style="display:flex;gap:8px;justify-content:center;padding:10px 0">
+    <input id="hcode" placeholder="筛选股票代码" style="width:160px;padding:8px 12px;border:1px solid #334155;border-radius:6px;background:#1e293b;color:#e2e8f0;font-size:13px;outline:none">
+    <input id="hdate" type="date" style="padding:8px 12px;border:1px solid #334155;border-radius:6px;background:#1e293b;color:#e2e8f0;font-size:13px;outline:none">
+    <button id="hbtn" style="padding:8px 20px;background:#1e40af;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">查询</button>
+    <button id="hbtn2" style="padding:8px 20px;background:#7c3aed;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">成功率统计</button>
+  </div>
+  <div id="hres" style="margin-top:8px"></div>`;
+  document.getElementById('hbtn').onclick=loadHistoryLogs;
+  document.getElementById('hbtn2').onclick=loadSuccessRate;
+  loadHistoryLogs();
+};
+
+async function loadHistoryLogs(){
+  const code=document.getElementById('hcode').value.trim();
+  const date=document.getElementById('hdate').value;
+  const el=document.getElementById('hres');
+  el.innerHTML='<div style="text-align:center;color:#64748b;padding:20px">加载中...</div>';
+  try{
+    let url='/api/log/list?';
+    if(code)url+='symbol='+encodeURIComponent(code);
+    if(date)url+=(code?'&':'')+'date='+date;
+    const r=await fetch(url);
+    const j=await r.json();
+    if(j.code!==0||!j.data.length){
+      el.innerHTML='<div style="text-align:center;color:#64748b;padding:20px">暂无记录</div>';return;
+    }
+    let h='<div class="card"><h3>分析记录 ('+j.data.length+'条)</h3><div class="tbl"><table><tr><th>日期</th><th>代码</th><th>名称</th><th>价格</th><th>涨跌</th><th>判断</th><th>吸筹</th><th>洗盘</th><th>出货</th><th>信号</th><th>5日量比</th></tr>';
+    j.data.forEach(x=>{
+      const bc=x.behavior==='吸筹'?'#ef4444':x.behavior==='洗盘'?'#22c55e':x.behavior==='出货'?'#f59e0b':'#94a3b8';
+      h+=`<tr>
+        <td>${x.date}</td><td>${x.symbol}</td><td>${x.name||''}</td>
+        <td>${x.price}</td><td class="${C(x.pct_change)}">${P(x.pct_change)}</td>
+        <td style="color:${bc};font-weight:bold">${x.behavior}</td>
+        <td class="cup">${x.score_xichou}%</td><td class="cdn">${x.score_xipan}%</td>
+        <td style="color:#f59e0b">${x.score_chuhuo}%</td>
+        <td>${x.signals_count}</td><td>${x.vol_ratio}x</td>
+      </tr>`;
+    });
+    el.innerHTML=h+'</table></div></div>';
+  }catch(e){el.innerHTML='<div style="color:#ef4444;padding:20px">请求失败</div>'}
+}
+
+async function loadSuccessRate(){
+  const el=document.getElementById('hres');
+  el.innerHTML='<div style="text-align:center;color:#64748b;padding:20px">计算中...</div>';
+  try{
+    const r=await fetch('/api/log/success_rate');
+    const j=await r.json();
+    const d=j.data;
+    if(!d.total){
+      el.innerHTML='<div style="text-align:center;color:#64748b;padding:20px">数据不足(需至少2天记录)请持续使用几天后查看</div>';return;
+    }
+    let h=`<div class="card"><h3>预测成功率统计</h3><div style="padding:10px">
+      <div style="text-align:center;margin-bottom:12px">
+        <span style="font-size:32px;font-weight:bold;color:${d.overall_rate>=50?'#22c55e':'#ef4444'}">${d.overall_rate}%</span>
+        <span style="color:#64748b;font-size:13px;margin-left:8px">总体准确率 (${d.correct}/${d.total})</span>
+      </div>`;
+    // 按行为类型
+    h+='<div style="display:flex;gap:10px;justify-content:center;margin-bottom:12px">';
+    for(const[b,s] of Object.entries(d.by_behavior)){
+      const c=b==='吸筹'?'#ef4444':b==='洗盘'?'#22c55e':b==='出货'?'#f59e0b':'#94a3b8';
+      h+=`<div style="background:#0f172a;border-radius:6px;padding:8px 16px;text-align:center">
+        <div style="color:${c};font-weight:bold;font-size:14px">${b}</div>
+        <div style="font-size:20px;font-weight:bold;color:${s.rate>=50?'#22c55e':'#ef4444'}">${s.rate}%</div>
+        <div style="color:#64748b;font-size:11px">${s.correct}/${s.total}</div>
+      </div>`;
+    }
+    h+='</div>';
+    // 个股明细
+    if(d.stocks.length){
+      h+='<div style="color:#64748b;font-size:12px;margin-bottom:6px">个股准确率:</div><table style="font-size:12px"><tr><th>代码</th><th>名称</th><th>样本</th><th>准确率</th></tr>';
+      d.stocks.forEach(s=>{
+        h+=`<tr><td>${s.symbol}</td><td>${s.name}</td><td>${s.total}</td>
+          <td style="color:${s.rate>=50?'#22c55e':'#ef4444'};font-weight:bold">${s.rate}%</td></tr>`;
+      });
+      h+='</table>';
+    }
+    h+='</div></div>';
+    el.innerHTML=h;
+  }catch(e){el.innerHTML='<div style="color:#ef4444;padding:20px">请求失败</div>'}
+}
+
+/* 启动 */
+(async()=>{
+  for(let i=0;i<60;i++){
+    try{const r=await fetch('/api/status');if((await r.json()).ready){document.getElementById('ld').style.display='none';load_sector();window.done_sector=1;return}}catch(e){}
+    document.getElementById('ltxt').textContent='加载中... ('+i*2+'s)';
+    await new Promise(r=>setTimeout(r,2000));
+  }
+  document.getElementById('ld').innerHTML='<p style="color:#ef4444">超时,刷新重试</p>';
+})();
+
+window.addEventListener('resize',()=>{document.querySelectorAll('.box').forEach(el=>{const c=echarts.getInstanceByDom(el);if(c)c.resize()})});
+</script>
+</body>
+</html>
