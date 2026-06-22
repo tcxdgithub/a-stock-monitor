@@ -556,13 +556,12 @@ async function searchStock(kw){
   const url=`https://suggest3.sinajs.cn/suggest/type=&key=${encodeURIComponent(kw)}`;
   const raw=await gfetchGBK(url);
   const results=[];
-  for(const line of raw.split('\n')){
-    const l=line.trim();
-    if(!l.includes('='))continue;
+  const valMatch=raw.match(/"([^"]+)"/);
+  if(!valMatch){sb.style.display='none';return}
+  const entries=valMatch[1].split(';');
+  for(const entry of entries){
     try{
-      const val=l.split('"')[1];
-      if(!val)continue;
-      const arr=val.split(',');
+      const arr=entry.split(',');
       if(arr.length<4)continue;
       const mkt=arr[3].slice(0,2);
       if(mkt!=='sh'&&mkt!=='sz')continue;
