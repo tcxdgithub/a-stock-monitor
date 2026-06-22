@@ -43,6 +43,8 @@ tr:hover{background:#334155}
 <button class="on" data-t="sector">行业板块</button>
 <button data-t="concept">概念板块</button>
 <button data-t="stock">热门个股</button>
+<button data-t="value" style="color:#f59e0b">低位埋伏</button>
+<button data-t="short" style="color:#ef4444">短线交易</button>
 <button data-t="analyze">个股分析</button>
 <button data-t="history">历史记录</button>
 </div>
@@ -53,6 +55,8 @@ tr:hover{background:#334155}
 <div id="p-predict-concept" style="display:none;margin:0 14px 14px;background:#1e293b;border-radius:8px;padding:10px;min-height:80px"></div>
 <div class="wrap" id="p-stock" style="display:none"></div>
 <div id="p-predict-stock" style="display:none;margin:0 14px 14px;background:#1e293b;border-radius:8px;padding:10px;min-height:80px"></div>
+<div id="p-value" style="display:none;padding:0 14px 14px"></div>
+<div id="p-short" style="display:none;padding:0 14px 14px"></div>
 <div id="p-analyze" style="display:none;padding:0 14px 14px"></div>
 <div id="p-history" style="display:none;padding:0 14px 14px"></div>
 
@@ -68,7 +72,7 @@ document.getElementById('tabs').onclick=e=>{
   document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('on'));
   e.target.classList.add('on');
   const t=e.target.dataset.t;
-  ['sector','concept','stock','analyze','history'].forEach(n=>{
+  ['sector','concept','stock','value','short','analyze','history'].forEach(n=>{
     const el=document.getElementById('p-'+n);
     if(el)el.style.display=n===t?'':'none';
     const pred=document.getElementById('p-predict-'+n);
@@ -191,6 +195,72 @@ async function loadStockPredict(){
     el.innerHTML=h+'</table>';
   }catch(e){el.innerHTML='<div style="color:#ef4444;padding:15px">请求失败</div>'}
 }
+
+/* 低位埋伏(价值投资) */
+window.load_value=async()=>{
+  const el=document.getElementById('p-value');
+  el.innerHTML='<div style="text-align:center;color:#64748b;padding:20px">分析中，正在筛选低估值+高股息+超跌股票...</div>';
+  try{
+    const r=await fetch('/api/value_stocks');
+    const j=await r.json();
+    if(j.code!==0||!j.data.length){el.innerHTML='<div style="text-align:center;color:#64748b;padding:20px">暂无符合条件的股票</div>';return}
+    let h=`<div style="background:#1e293b;border-radius:8px;padding:12px;margin-bottom:10px">
+      <div style="color:#f59e0b;font-weight:bold;font-size:15px;margin-bottom:6px">低位埋伏策略</div>
+      <div style="color:#94a3b8;font-size:12px">筛选条件：低PE + 低PB + 52周高点大幅回撤 + 接近低点 | 适合中长期持有</div>
+    </div>`;
+    h+=`<div class="card" style="min-height:auto"><div class="tbl"><table><tr>
+      <th>评分</th><th>代码</th><th>名称</th><th>现价</th><th>涨跌</th>
+      <th>PE</th><th>PB</th><th>距高点</th><th>距低点</th><th>成交额</th><th>建议</th>
+    </tr>`;
+    j.data.forEach(x=>{
+      const sc_color=x.score>=45?'#ef4444':x.score>=35?'#f59e0b':x.score>=25?'#3b82f6':'#94a3b8';
+      h+=`<tr>
+        <td style="color:${sc_color};font-weight:bold;font-size:14px">${x.score}</td>
+        <td>${x.code}</td><td>${x.name}</td><td>${x.latest}</td>
+        <td class="${C(x.pct_change)}">${P(x.pct_change)}</td>
+        <td style="color:${x.pe<12?'#22c55e':'#94a3b8'}">${x.pe}</td>
+        <td style="color:${x.pb<1.2?'#22c55e':'#94a3b8'}">${x.pb}</td>
+        <td style="color:#ef4444">${x.drawdown_from_high}%</td>
+        <td style="color:#22c55e">+${x.above_low}%</td>
+        <td>${F(x.amount)}</td>
+        <td style="color:${x.advice_color};font-weight:bold">${x.advice}</td>
+      </tr>`;
+    });
+    el.innerHTML=h+'</table></div></div>';
+  }catch(e){el.innerHTML='<div style="color:#ef4444;padding:20px">请求失败</div>'}
+};
+
+/* 短线交易(尾盘埋伏) */
+window.load_short=async()=>{
+  const el=document.getElementById('p-short');
+  el.innerHTML='<div style="text-align:center;color:#64748b;padding:20px">分析中，正在筛选尾盘放量+主力流入的股票...</div>';
+  try{
+    const r=await fetch('/api/short_term');
+    const j=await r.json();
+    if(j.code!==0||!j.data.length){el.innerHTML='<div style="text-align:center;color:#64748b;padding:20px">暂无符合条件的股票</div>';return}
+    let h=`<div style="background:#1e293b;border-radius:8px;padding:12px;margin-bottom:10px">
+      <div style="color:#ef4444;font-weight:bold;font-size:15px;margin-bottom:6px">短线交易策略</div>
+      <div style="color:#94a3b8;font-size:12px">筛选条件：涨幅1~5% + 高换手 + 高成交额 + 外盘占比高 | 今日尾盘入，明日高开出</div>
+    </div>`;
+    h+=`<div class="card" style="min-height:auto"><div class="tbl"><table><tr>
+      <th>评分</th><th>代码</th><th>名称</th><th>现价</th><th>涨跌</th>
+      <th>外盘%</th><th>换手%</th><th>成交额</th><th>信号</th><th>可信度</th><th>预估开盘</th>
+    </tr>`;
+    j.data.forEach(x=>{
+      h+=`<tr>
+        <td style="color:${x.signal_color};font-weight:bold;font-size:14px">${x.score}</td>
+        <td>${x.code}</td><td>${x.name}</td><td>${x.latest}</td>
+        <td class="${C(x.pct_change)}">${P(x.pct_change)}</td>
+        <td style="color:${x.outer_ratio>60?'#ef4444':'#94a3b8'}">${x.outer_ratio}%</td>
+        <td>${x.turnover}%</td><td>${F(x.amount)}</td>
+        <td style="color:${x.signal_color};font-weight:bold">${x.signal}</td>
+        <td style="color:${x.confidence==='高'?'#22c55e':x.confidence==='中'?'#f59e0b':'#94a3b8'}">${x.confidence}</td>
+        <td style="color:#22c55e">${x.expected_open}</td>
+      </tr>`;
+    });
+    el.innerHTML=h+'</table></div></div>';
+  }catch(e){el.innerHTML='<div style="color:#ef4444;padding:20px">请求失败</div>'}
+};
 
 /* 个股分析 */
 window.load_analyze=()=>{
@@ -423,31 +493,72 @@ async function loadSuccessRate(){
     if(!d.total){
       el.innerHTML='<div style="text-align:center;color:#64748b;padding:20px">数据不足(需至少2天记录)请持续使用几天后查看</div>';return;
     }
-    let h=`<div class="card"><h3>预测成功率统计</h3><div style="padding:10px">
-      <div style="text-align:center;margin-bottom:12px">
-        <span style="font-size:32px;font-weight:bold;color:${d.overall_rate>=50?'#22c55e':'#ef4444'}">${d.overall_rate}%</span>
-        <span style="color:#64748b;font-size:13px;margin-left:8px">总体准确率 (${d.correct}/${d.total})</span>
-      </div>`;
-    // 按行为类型
-    h+='<div style="display:flex;gap:10px;justify-content:center;margin-bottom:12px">';
-    for(const[b,s] of Object.entries(d.by_behavior)){
-      const c=b==='吸筹'?'#ef4444':b==='洗盘'?'#22c55e':b==='出货'?'#f59e0b':'#94a3b8';
-      h+=`<div style="background:#0f172a;border-radius:6px;padding:8px 16px;text-align:center">
-        <div style="color:${c};font-weight:bold;font-size:14px">${b}</div>
-        <div style="font-size:20px;font-weight:bold;color:${s.rate>=50?'#22c55e':'#ef4444'}">${s.rate}%</div>
-        <div style="color:#64748b;font-size:11px">${s.correct}/${s.total}</div>
-      </div>`;
+    const ga=d.group_a, gb=d.group_b;
+    const rateColor=v=>v>=50?'#22c55e':'#ef4444';
+    const bColor=b=>b==='吸筹'?'#ef4444':b==='洗盘'?'#22c55e':b==='出货'?'#f59e0b':'#94a3b8';
+
+    let h=`<div class="card"><h3>AB组成功率对比</h3><div style="padding:10px">`;
+
+    // AB组总体对比
+    h+=`<div style="display:flex;gap:16px;justify-content:center;margin-bottom:16px">
+      <div style="background:#0f172a;border-radius:8px;padding:12px 24px;text-align:center;flex:1;max-width:280px;border:1px solid #334155">
+        <div style="color:#3b82f6;font-weight:bold;margin-bottom:4px">${ga.label}</div>
+        <div style="font-size:28px;font-weight:bold;color:${rateColor(ga.overall_rate)}">${ga.overall_rate}%</div>
+        <div style="color:#64748b;font-size:12px">${ga.correct}/${ga.total} 样本</div>
+        <div style="color:#475569;font-size:11px;margin-top:4px">${ga.desc}</div>
+      </div>
+      <div style="background:#0f172a;border-radius:8px;padding:12px 24px;text-align:center;flex:1;max-width:280px;border:1px solid #334155">
+        <div style="color:#a855f7;font-weight:bold;margin-bottom:4px">${gb.label}</div>
+        <div style="font-size:28px;font-weight:bold;color:${rateColor(gb.overall_rate)}">${gb.overall_rate}%</div>
+        <div style="color:#64748b;font-size:12px">${gb.correct}/${gb.total} 样本</div>
+        <div style="color:#475569;font-size:11px;margin-top:4px">${gb.desc}</div>
+      </div>
+    </div>`;
+
+    // 胜负提示
+    if(ga.overall_rate > gb.overall_rate){
+      h+=`<div style="text-align:center;color:#3b82f6;font-size:12px;margin-bottom:12px">A组(次日验证)暂时领先，继续观察</div>`;
+    }else if(gb.overall_rate > ga.overall_rate){
+      h+=`<div style="text-align:center;color:#a855f7;font-size:12px;margin-bottom:12px">B组(5日验证)暂时领先，5日验证更符合实际</div>`;
+    }else{
+      h+=`<div style="text-align:center;color:#64748b;font-size:12px;margin-bottom:12px">两组持平，数据量还不够</div>`;
     }
-    h+='</div>';
-    // 个股明细
+
+    // 按行为类型AB对比
+    const allBehaviors = new Set([...Object.keys(ga.by_behavior), ...Object.keys(gb.by_behavior)]);
+    if(allBehaviors.size){
+      h+=`<div style="color:#64748b;font-size:12px;margin-bottom:6px">按行为类型对比:</div>`;
+      h+=`<table style="font-size:12px"><tr><th>行为</th><th>A组(次日)</th><th>B组(5日)</th><th>领先</th></tr>`;
+      for(const b of allBehaviors){
+        const sa=ga.by_behavior[b]||{rate:0,correct:0,total:0};
+        const sb=gb.by_behavior[b]||{rate:0,correct:0,total:0};
+        const lead=sa.rate>sb.rate?'A':sb.rate>sa.rate?'B':'平';
+        const leadColor=lead==='A'?'#3b82f6':lead==='B'?'#a855f7':'#64748b';
+        h+=`<tr>
+          <td style="color:${bColor(b)};font-weight:bold">${b}</td>
+          <td style="color:${rateColor(sa.rate)}">${sa.rate}% (${sa.correct}/${sa.total})</td>
+          <td style="color:${rateColor(sb.rate)}">${sb.rate}% (${sb.correct}/${sb.total})</td>
+          <td style="color:${leadColor}">${lead}</td>
+        </tr>`;
+      }
+      h+='</table>';
+    }
+
+    // 个股AB对比
     if(d.stocks.length){
-      h+='<div style="color:#64748b;font-size:12px;margin-bottom:6px">个股准确率:</div><table style="font-size:12px"><tr><th>代码</th><th>名称</th><th>样本</th><th>准确率</th></tr>';
+      h+=`<div style="color:#64748b;font-size:12px;margin-top:12px;margin-bottom:6px">个股AB组对比:</div>`;
+      h+=`<table style="font-size:12px"><tr><th>代码</th><th>名称</th><th>A组</th><th>B组</th><th>领先</th></tr>`;
       d.stocks.forEach(s=>{
-        h+=`<tr><td>${s.symbol}</td><td>${s.name}</td><td>${s.total}</td>
-          <td style="color:${s.rate>=50?'#22c55e':'#ef4444'};font-weight:bold">${s.rate}%</td></tr>`;
+        const lead=s.a_rate>s.b_rate?'A':s.b_rate>s.a_rate?'B':'平';
+        const leadColor=lead==='A'?'#3b82f6':lead==='B'?'#a855f7':'#64748b';
+        h+=`<tr><td>${s.symbol}</td><td>${s.name}</td>
+          <td style="color:${rateColor(s.a_rate)}">${s.a_rate}%</td>
+          <td style="color:${rateColor(s.b_rate)}">${s.b_rate}%</td>
+          <td style="color:${leadColor}">${lead}</td></tr>`;
       });
       h+='</table>';
     }
+
     h+='</div></div>';
     el.innerHTML=h;
   }catch(e){el.innerHTML='<div style="color:#ef4444;padding:20px">请求失败</div>'}

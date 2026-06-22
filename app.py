@@ -566,7 +566,7 @@ def _analyze_stock(symbol, days=60):
         behavior = "洗盘"
         behavior_desc = "主力可能正在洗盘,关注缩量企稳后的反弹机会"
         behavior_color = "#22c55e"
-    elif score_chuhuo >= 20:
+    elif score_chuhuo > score_xichou and score_chuhuo > score_xipan and score_chuhuo >= 15:
         behavior = "出货"
         behavior_desc = "主力可能正在出货,注意控制风险,不宜追高"
         behavior_color = "#f59e0b"
@@ -785,10 +785,10 @@ def _load_logs(date_str=None, symbol=None):
 
 
 def _calc_success_rate():
-    """计算预测成功率: 比较分析时的买卖点与后续实际走势"""
+    """计算预测成功率 AB组对比: A=次日验证, B=5日验证"""
     all_logs = _load_logs()
     if not all_logs:
-        return {"total": 0, "records": [], "summary": {}}
+        return {"total": 0, "records": [], "summary": {}, "group_a": {}, "group_b": {}}
 
     # 按股票分组
     by_stock = {}
@@ -798,88 +798,152 @@ def _calc_success_rate():
             by_stock[sym] = []
         by_stock[sym].append(r)
 
-    results = []
+    # AB组统计
+    group_a = {"total": 0, "correct": 0, "by_behavior": {}}
+    group_b = {"total": 0, "correct": 0, "by_behavior": {}}
+    stock_results = []
+
     for sym, records in by_stock.items():
-        # 按日期排序
         records.sort(key=lambda x: x["date"])
         if len(records) < 2:
             continue
 
-        correct = 0
-        total = 0
+        a_correct = 0
+        a_total = 0
+        b_correct = 0
+        b_total = 0
         details = []
+
         for i in range(len(records) - 1):
             today_r = records[i]
-            tomorrow_r = records[i + 1]
             today_price = today_r["price"]
-            tomorrow_price = tomorrow_r["price"]
-            change = (tomorrow_price - today_price) / today_price * 100
             behavior = today_r["behavior"]
 
-            hit = False
-            if behavior == "吸筹" and change > 0:
-                hit = True
-            elif behavior == "出货" and change < 0:
-                hit = True
+            # === A组: 次日验证 ===
+            tomorrow_r = records[i + 1]
+            tomorrow_price = tomorrow_r["price"]
+            day1_change = (tomorrow_price - today_price) / today_price * 100
+
+            a_hit = False
+            if behavior == "吸筹" and day1_change > 0:
+                a_hit = True
+            elif behavior == "出货" and day1_change < 0:
+                a_hit = True
             elif behavior == "震荡":
-                # 震荡判断: 3%以内算对
-                hit = abs(change) < 3
+                a_hit = abs(day1_change) < 3
             elif behavior == "洗盘":
-                # 洗盘: 第二天下跌后第三天反弹算对
                 if i + 2 < len(records):
                     day3_price = records[i + 2]["price"]
-                    hit = change < 0 and day3_price > tomorrow_price
+                    a_hit = day1_change < 0 and day3_price > tomorrow_price
                 else:
-                    hit = True  # 数据不足,不计入
+                    a_hit = True
 
             if behavior != "洗盘" or i + 2 < len(records):
-                total += 1
-                if hit:
-                    correct += 1
-                details.append({
-                    "date": today_r["date"],
-                    "behavior": behavior,
-                    "price": today_price,
-                    "next_change": round(change, 2),
-                    "hit": hit
-                })
+                a_total += 1
+                if a_hit:
+                    a_correct += 1
 
-        if total > 0:
-            results.append({
+            # === B组: 5日验证 ===
+            b_hit = False
+            end_idx = min(i + 6, len(records))  # 最多看5天
+            if end_idx > i + 1:
+                future_prices = [records[j]["price"] for j in range(i + 1, end_idx)]
+                if behavior == "吸筹":
+                    # 5日内最高价比今天涨了就算对
+                    max_future = max(future_prices)
+                    b_hit = (max_future - today_price) / today_price > 0
+                elif behavior == "出货":
+                    # 5日内最低价比今天跌了就算对
+                    min_future = min(future_prices)
+                    b_hit = (min_future - today_price) / today_price < 0
+                elif behavior == "震荡":
+                    # 5日内最大波动<5%算对
+                    max_change = max(abs((p - today_price) / today_price * 100) for p in future_prices)
+                    b_hit = max_change < 5
+                elif behavior == "洗盘":
+                    # 5日内先跌后涨算对
+                    if len(future_prices) >= 2:
+                        min_idx = future_prices.index(min(future_prices))
+                        b_hit = min_idx > 0 and future_prices[-1] > today_price
+                    else:
+                        b_hit = True
+
+                b_total += 1
+                if b_hit:
+                    b_correct += 1
+
+            details.append({
+                "date": today_r["date"],
+                "behavior": behavior,
+                "price": today_price,
+                "day1_change": round(day1_change, 2),
+                "a_hit": a_hit,
+                "b_hit": b_hit,
+            })
+
+        # 按行为类型统计A组
+        for d in details:
+            b = d["behavior"]
+            if b not in group_a["by_behavior"]:
+                group_a["by_behavior"][b] = {"total": 0, "correct": 0}
+            group_a["by_behavior"][b]["total"] += 1
+            if d["a_hit"]:
+                group_a["by_behavior"][b]["correct"] += 1
+
+            if b not in group_b["by_behavior"]:
+                group_b["by_behavior"][b] = {"total": 0, "correct": 0}
+            group_b["by_behavior"][b]["total"] += 1
+            if d["b_hit"]:
+                group_b["by_behavior"][b]["correct"] += 1
+
+        group_a["total"] += a_total
+        group_a["correct"] += a_correct
+        group_b["total"] += b_total
+        group_b["correct"] += b_correct
+
+        if a_total > 0:
+            stock_results.append({
                 "symbol": sym,
                 "name": records[0].get("name", ""),
-                "total": total,
-                "correct": correct,
-                "rate": round(correct / total * 100, 1),
+                "a_total": a_total, "a_correct": a_correct,
+                "a_rate": round(a_correct / a_total * 100, 1),
+                "b_total": b_total, "b_correct": b_correct,
+                "b_rate": round(b_correct / b_total * 100, 1) if b_total > 0 else 0,
                 "details": details
             })
 
-    # 总体统计
-    total_all = sum(r["total"] for r in results)
-    correct_all = sum(r["correct"] for r in results)
-    overall_rate = round(correct_all / total_all * 100, 1) if total_all > 0 else 0
-
-    # 按行为类型统计
-    behavior_stats = {}
-    for r in results:
-        for d in r["details"]:
-            b = d["behavior"]
-            if b not in behavior_stats:
-                behavior_stats[b] = {"total": 0, "correct": 0}
-            behavior_stats[b]["total"] += 1
-            if d["hit"]:
-                behavior_stats[b]["correct"] += 1
-
-    for b in behavior_stats:
-        s = behavior_stats[b]
+    # 计算百分比
+    group_a["overall_rate"] = round(group_a["correct"] / group_a["total"] * 100, 1) if group_a["total"] > 0 else 0
+    group_b["overall_rate"] = round(group_b["correct"] / group_b["total"] * 100, 1) if group_b["total"] > 0 else 0
+    for b in group_a["by_behavior"]:
+        s = group_a["by_behavior"][b]
+        s["rate"] = round(s["correct"] / s["total"] * 100, 1) if s["total"] > 0 else 0
+    for b in group_b["by_behavior"]:
+        s = group_b["by_behavior"][b]
         s["rate"] = round(s["correct"] / s["total"] * 100, 1) if s["total"] > 0 else 0
 
     return {
-        "total": total_all,
-        "correct": correct_all,
-        "overall_rate": overall_rate,
-        "by_behavior": behavior_stats,
-        "stocks": sorted(results, key=lambda x: x["rate"], reverse=True)
+        "total": group_a["total"],
+        "correct": group_a["correct"],
+        "overall_rate": group_a["overall_rate"],
+        "by_behavior": group_a["by_behavior"],
+        "stocks": sorted(stock_results, key=lambda x: x["a_rate"], reverse=True),
+        "group_a": {
+            "label": "A组: 次日验证",
+            "desc": "预测后次日涨跌即验证",
+            "total": group_a["total"],
+            "correct": group_a["correct"],
+            "overall_rate": group_a["overall_rate"],
+            "by_behavior": group_a["by_behavior"],
+        },
+        "group_b": {
+            "label": "B组: 5日验证",
+            "desc": "预测后5日内走势验证",
+            "total": group_b["total"],
+            "correct": group_b["correct"],
+            "overall_rate": group_b["overall_rate"],
+            "by_behavior": group_b["by_behavior"],
+        }
     }
 
 
@@ -948,6 +1012,8 @@ def _search_stock_by_name(keyword):
             code = arr[2]
             full = arr[3]  # sh600519
             market = full[:2]  # sh/sz
+            if market not in ("sh", "sz"):
+                continue
             name = arr[4] if len(arr) > 4 and arr[4] else code
             results.append({
                 "code": code,
@@ -984,6 +1050,282 @@ def stock_search():
         _save_log(result)
     except Exception as e:
         print(f"[LOG ERR] {e}", flush=True)
+    return jsonify({"code": 0, "data": result})
+
+
+# ===== 低位埋伏股(价值投资) =====
+def _get_value_stocks():
+    """获取低位埋伏股候选池：低估值+高股息+超跌"""
+    candidates = []
+
+    # 从预设的价值股池子中筛选
+    value_pool = [
+        "sh601398","sh601939","sh601288","sh601328","sh601988",
+        "sh601088","sh601857","sh601628","sh601601","sh601318",
+        "sh600519","sz000858","sh600036","sz000001","sh601166",
+        "sh600276","sz000568","sz000651","sh600887","sh603288",
+        "sz000002","sz002475","sz002594","sh600900","sh600585",
+        "sh601899","sz002371","sz300059","sz002049","sz002714",
+        "sh600031","sz300015","sz000725","sh600030","sh601688",
+        "sh600048","sz000063","sh601669","sh601211","sh601012",
+        "sz002304","sz000333","sh600309","sh601009","sh600000",
+        "sh601998","sz000002","sh601390","sh601186","sh601766",
+        "sh601800","sh601919","sz002142","sz000069","sz002027",
+    ]
+    codes = list(set(value_pool))
+
+    raw = _curl(f"https://qt.gtimg.cn/q={','.join(codes)}",
+                ["-H", f"User-Agent: {UA}", "-H", "Referer: https://finance.qq.com/"], enc="gbk")
+    for line in raw.split(";"):
+        line = line.strip()
+        if "=" not in line:
+            continue
+        try:
+            p = line.split("=", 1)[1].strip('"').split("~")
+            if len(p) < 46:
+                continue
+            latest = float(p[3] or 0)
+            pct = float(p[32] or 0)
+            amount = float(p[37] or 0)
+            turnover = float(p[38] or 0)
+            pe = float(p[39] or 0)
+            pb = float(p[46] or 0) if len(p) > 46 else 0
+            high_52w = float(p[33] or 0) if len(p) > 33 else 0
+            low_52w = float(p[34] or 0) if len(p) > 34 else 0
+            name = p[1]
+            code = p[2]
+
+            # 过滤无效数据
+            if latest <= 0 or pe <= 0:
+                continue
+
+            # 计算距52周高点的回撤
+            drawdown_from_high = (latest - high_52w) / high_52w * 100 if high_52w > 0 else 0
+            # 计算距52周低点的距离
+            above_low = (latest - low_52w) / low_52w * 100 if low_52w > 0 else 0
+
+            candidates.append({
+                "code": code, "name": name,
+                "latest": latest, "pct_change": pct,
+                "pe": round(pe, 2), "pb": round(pb, 2),
+                "amount": amount, "turnover": turnover,
+                "high_52w": high_52w, "low_52w": low_52w,
+                "drawdown_from_high": round(drawdown_from_high, 2),
+                "above_low": round(above_low, 2),
+            })
+        except Exception:
+            continue
+
+    # 评分策略：低PE + 低PB + 大幅回撤 + 接近低点
+    for s in candidates:
+        score = 0
+        # PE评分 (PE越低越好, 0-15分)
+        if s["pe"] > 0:
+            if s["pe"] < 8: score += 15
+            elif s["pe"] < 12: score += 12
+            elif s["pe"] < 18: score += 8
+            elif s["pe"] < 25: score += 4
+
+        # PB评分 (PB越低越好, 0-15分)
+        if s["pb"] > 0:
+            if s["pb"] < 0.8: score += 15
+            elif s["pb"] < 1.2: score += 12
+            elif s["pb"] < 1.8: score += 8
+            elif s["pb"] < 2.5: score += 4
+
+        # 回撤评分 (回撤越大机会越大, 0-20分)
+        dd = abs(s["drawdown_from_high"])
+        if dd > 40: score += 20
+        elif dd > 30: score += 16
+        elif dd > 20: score += 12
+        elif dd > 10: score += 6
+
+        # 接近低点评分 (越接近低点越安全, 0-15分)
+        al = s["above_low"]
+        if al < 5: score += 15
+        elif al < 10: score += 12
+        elif al < 20: score += 8
+        elif al < 30: score += 4
+
+        # 当日不跌太多（-3%以内）加分
+        if -3 < s["pct_change"] < 0: score += 5
+        elif s["pct_change"] >= 0: score += 3
+
+        s["score"] = score
+
+        # 投资建议
+        if score >= 45:
+            s["advice"] = "强烈推荐"
+            s["advice_color"] = "#ef4444"
+        elif score >= 35:
+            s["advice"] = "推荐"
+            s["advice_color"] = "#f59e0b"
+        elif score >= 25:
+            s["advice"] = "关注"
+            s["advice_color"] = "#3b82f6"
+        else:
+            s["advice"] = "观望"
+            s["advice_color"] = "#94a3b8"
+
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+    return candidates[:15]
+
+
+@app.route("/api/value_stocks")
+def api_value_stocks():
+    """低位埋伏股"""
+    result = _get_value_stocks()
+    return jsonify({"code": 0, "data": result})
+
+
+# ===== 短线交易(尾盘埋伏) =====
+def _get_short_term_stocks():
+    """短线交易：寻找尾盘放量+主力流入的股票"""
+    candidates = []
+
+    # 热门活跃股池
+    hot_pool = [
+        "sh600519","sh601318","sz000858","sh600036","sz002594",
+        "sz300750","sz002475","sh600900","sz000001","sh601899",
+        "sz002371","sz000651","sz300059","sz002049","sh601166",
+        "sz000568","sz300760","sh600887","sh603288","sz002714",
+        "sh601398","sh600276","sz300274","sh688981","sz002230",
+        "sh600031","sz300015","sz000725","sh600585","sz000002",
+        "sh601688","sh600030","sz002142","sz000333","sh600309",
+        "sh601012","sz002304","sh601088","sh601857","sh601628",
+        "sh601211","sh601919","sh600048","sz000063","sh601669",
+        "sh601766","sh601800","sz000069","sz002027","sh601009",
+        "sh600000","sh601998","sh601390","sh601186","sz000688",
+        "sz002415","sz000725","sz002304","sz300015","sh600809",
+        "sz000568","sh603369","sz002032","sz002241","sz300274",
+        "sh688981","sh600745","sz002475","sz300750","sh603259",
+        "sh601127","sz002594","sz300496","sh600760","sz002049",
+    ]
+    codes = list(set(hot_pool))
+
+    raw = _curl(f"https://qt.gtimg.cn/q={','.join(codes)}",
+                ["-H", f"User-Agent: {UA}", "-H", "Referer: https://finance.qq.com/"], enc="gbk")
+
+    for line in raw.split(";"):
+        line = line.strip()
+        if "=" not in line:
+            continue
+        try:
+            p = line.split("=", 1)[1].strip('"').split("~")
+            if len(p) < 46:
+                continue
+            name = p[1]
+            code = p[2]
+            latest = float(p[3] or 0)
+            pct = float(p[32] or 0)
+            amount = float(p[37] or 0)
+            turnover = float(p[38] or 0)
+            # p[49]=外盘, p[50]=内盘
+            outer = float(p[49] or 0) if len(p) > 49 else 0
+            inner = float(p[50] or 0) if len(p) > 50 else 0
+            # 今日开盘价
+            open_price = float(p[5] or 0) if len(p) > 5 else 0
+            # 昨日收盘
+            prev_close = float(p[4] or 0) if len(p) > 4 else 0
+
+            if latest <= 0 or amount <= 0:
+                continue
+
+            # 外盘占比（主动买入力度）
+            total_vol = outer + inner
+            outer_ratio = outer / total_vol * 100 if total_vol > 0 else 50
+
+            candidates.append({
+                "code": code, "name": name,
+                "latest": latest, "open": open_price,
+                "prev_close": prev_close, "pct_change": pct,
+                "amount": amount, "turnover": turnover,
+                "outer": outer, "inner": inner,
+                "outer_ratio": round(outer_ratio, 1),
+            })
+        except Exception:
+            continue
+
+    # 短线评分策略
+    for s in candidates:
+        score = 0
+        pct = s["pct_change"]
+        turnover = s["turnover"]
+        amount = s["amount"]
+        outer_ratio = s["outer_ratio"]
+        latest = s["latest"]
+        open_p = s["open"]
+        prev = s["prev_close"]
+
+        # 条件1: 涨幅适中 (1%~5% 区间最佳)
+        if 1 <= pct <= 3: score += 20
+        elif 3 < pct <= 5: score += 15
+        elif 0.5 <= pct < 1: score += 10
+        elif 5 < pct <= 7: score += 8
+
+        # 条件2: 高换手 (活跃度)
+        if turnover > 8: score += 15
+        elif turnover > 5: score += 12
+        elif turnover > 3: score += 8
+        elif turnover > 1.5: score += 4
+
+        # 条件3: 高成交额 (资金关注)
+        if amount > 20e9: score += 12
+        elif amount > 10e9: score += 10
+        elif amount > 5e9: score += 7
+        elif amount > 2e9: score += 4
+
+        # 条件4: 外盘占比高 (主动买入强)
+        if outer_ratio > 65: score += 15
+        elif outer_ratio > 58: score += 10
+        elif outer_ratio > 52: score += 5
+
+        # 条件5: 尾盘拉升特征 (收盘价接近最高价 - 用开盘到收盘判断)
+        if open_p > 0 and latest > open_p:
+            intraday_strength = (latest - open_p) / open_p * 100
+            if intraday_strength > 3: score += 12
+            elif intraday_strength > 1.5: score += 8
+            elif intraday_strength > 0.5: score += 4
+
+        # 条件6: 不追高（避免高位接盘）
+        if 0 < pct < 6: score += 5
+        elif pct >= 6: score -= 5
+
+        # 条件7: 连板风险扣分
+        if pct > 9.5: score -= 20
+
+        s["score"] = max(0, score)
+
+        # 预测次日高开概率
+        if score >= 55:
+            s["signal"] = "强买入"
+            s["signal_color"] = "#ef4444"
+            s["confidence"] = "高"
+            s["expected_open"] = f"+{round(pct*0.3+pct*0.5, 1)}%"
+        elif score >= 40:
+            s["signal"] = "买入"
+            s["signal_color"] = "#f59e0b"
+            s["confidence"] = "中"
+            s["expected_open"] = f"+{round(pct*0.2+pct*0.3, 1)}%"
+        elif score >= 28:
+            s["signal"] = "关注"
+            s["signal_color"] = "#3b82f6"
+            s["confidence"] = "中低"
+            s["expected_open"] = f"+{round(pct*0.1, 1)}%"
+        else:
+            s["signal"] = "观望"
+            s["signal_color"] = "#94a3b8"
+            s["confidence"] = "低"
+            s["expected_open"] = "平开"
+
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+    return candidates[:15]
+
+
+@app.route("/api/short_term")
+def api_short_term():
+    """短线交易(尾盘埋伏)"""
+    result = _get_short_term_stocks()
     return jsonify({"code": 0, "data": result})
 
 
