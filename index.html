@@ -67,7 +67,8 @@ tr:hover{background:#334155}
 
 <script>
 const UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
-const CORS='https://corsproxy.io/?';
+const CORS_PROXIES=['https://api.allorigins.win/raw?url=','https://corsproxy.io/?'];
+let CORS=CORS_PROXIES[0];
 
 const F=v=>{if(v==null||isNaN(v))return'--';let a=Math.abs(v);if(a>=1e12)return(v/1e12).toFixed(2)+'万亿';if(a>=1e8)return(v/1e8).toFixed(2)+'亿';if(a>=1e4)return(v/1e4).toFixed(2)+'万';return v.toFixed(2)};
 const P=v=>v==null?'--':v.toFixed(2)+'%';
@@ -76,24 +77,24 @@ setInterval(()=>{document.getElementById('tm').textContent=new Date().toLocaleSt
 document.getElementById('tm').textContent=new Date().toLocaleString('zh-CN');
 
 async function gfetch(url,enc){
-  try{
-    const r=await fetch(CORS+encodeURIComponent(url),{headers:{'User-Agent':UA}});
-    if(!r.ok)throw new Error(r.status);
-    return await r.text();
-  }catch(e){
+  for(const proxy of CORS_PROXIES){
     try{
-      const r2=await fetch(url);
-      if(!r2.ok)throw new Error(r2.status);
-      if(enc==='gbk'){
-        const buf=await r2.arrayBuffer();
-        return new TextDecoder('gbk').decode(buf);
-      }
-      return await r2.text();
-    }catch(e2){
-      console.error('fetch failed:',url,e2);
-      return '';
-    }
+      const r=await fetch(proxy+encodeURIComponent(url),{headers:{'User-Agent':UA}});
+      if(!r.ok)continue;
+      const t=await r.text();
+      if(t.includes('error')||t.includes('Error'))continue;
+      return t;
+    }catch(e){continue}
   }
+  try{
+    const r=await fetch(url);
+    if(!r.ok)return '';
+    if(enc==='gbk'){
+      const buf=await r.arrayBuffer();
+      return new TextDecoder('gbk').decode(buf);
+    }
+    return await r.text();
+  }catch(e){return ''}
 }
 
 async function gfetchJSON(url){
