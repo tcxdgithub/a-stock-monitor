@@ -554,31 +554,20 @@ window.load_analyze=()=>{
 async function searchStock(kw){
   const sb=document.getElementById('sug-box');
   if(!sb)return;
-  const url=`https://suggest3.sinajs.cn/suggest/type=&key=${encodeURIComponent(kw)}`;
-  const raw=await gfetchGBK(url);
-  const results=[];
-  const valMatch=raw.match(/"([^"]+)"/);
-  if(!valMatch){sb.style.display='none';return}
-  const entries=valMatch[1].split(';');
-  for(const entry of entries){
-    try{
-      const arr=entry.split(',');
-      if(arr.length<4)continue;
-      const mkt=arr[3].slice(0,2);
-      if(mkt!=='sh'&&mkt!=='sz')continue;
-      results.push({code:arr[2],name:arr[4]||arr[2],symbol:arr[3],market:mkt==='sh'?'沪':'深'});
-    }catch(e){continue}
-  }
-  if(!results.length){sb.style.display='none';return}
-  let h='';
-  results.slice(0,10).forEach(x=>{
-    h+=`<div class="sug-item" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid #334155;display:flex;justify-content:space-between" onmousedown="pickStock('${x.code}','${x.name}')">
-      <span style="color:#e2e8f0">${x.name}</span>
-      <span style="color:#64748b;font-size:12px">${x.market} ${x.code}</span>
-    </div>`;
-  });
-  sb.innerHTML=h;
-  sb.style.display='block';
+  try{
+    const r=await fetch('/api/stock_name_search?kw='+encodeURIComponent(kw));
+    const j=await r.json();
+    if(j.code!==0||!j.data.length){sb.style.display='none';return}
+    let h='';
+    j.data.forEach(x=>{
+      h+=`<div class="sug-item" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid #334155;display:flex;justify-content:space-between" onmousedown="pickStock('${x.code}','${x.name}')">
+        <span style="color:#e2e8f0">${x.name}</span>
+        <span style="color:#64748b;font-size:12px">${x.market} ${x.code}</span>
+      </div>`;
+    });
+    sb.innerHTML=h;
+    sb.style.display='block';
+  }catch(e){sb.style.display='none'}
 }
 function hideSug(){const sb=document.getElementById('sug-box');if(sb)sb.style.display='none'}
 function pickStock(code,name){document.getElementById('scode').value=code;hideSug();doAnalyze()}

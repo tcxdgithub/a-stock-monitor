@@ -996,19 +996,17 @@ def _search_stock_by_name(keyword):
     if not raw:
         return []
     results = []
-    for line in raw.split("\n"):
-        line = line.strip()
-        if not line or "=" not in line:
-            continue
+    # 提取引号内的内容
+    import re
+    match = re.search(r'"([^"]+)"', raw)
+    if not match:
+        return []
+    entries = match.group(1).split(";")
+    for entry in entries:
         try:
-            # var suggestvalue="sh600519,11,600519,sh600519,贵州茅台,,贵州茅台,99,1,ESG,,";
-            val = line.split('"')[1]
-            if not val:
-                continue
-            arr = val.split(",")
+            arr = entry.split(",")
             if len(arr) < 4:
                 continue
-            # arr[2]=代码, arr[3]=sh/sz+代码, arr[4]=名称
             code = arr[2]
             full = arr[3]  # sh600519
             market = full[:2]  # sh/sz
