@@ -43,6 +43,7 @@ tr:hover{background:#334155}
 <button class="on" data-t="sector">行业板块</button>
 <button data-t="concept">概念板块</button>
 <button data-t="stock">热门个股</button>
+<button data-t="sentiment" style="color:#a855f7">市场情绪</button>
 <button data-t="value" style="color:#f59e0b">低位埋伏</button>
 <button data-t="short" style="color:#ef4444">短线交易</button>
 <button data-t="analyze">个股分析</button>
@@ -55,6 +56,7 @@ tr:hover{background:#334155}
 <div id="p-predict-concept" style="display:none;margin:0 14px 14px;background:#1e293b;border-radius:8px;padding:10px;min-height:80px"></div>
 <div class="wrap" id="p-stock" style="display:none"></div>
 <div id="p-predict-stock" style="display:none;margin:0 14px 14px;background:#1e293b;border-radius:8px;padding:10px;min-height:80px"></div>
+<div id="p-sentiment" style="display:none;padding:0 14px 14px"></div>
 <div id="p-value" style="display:none;padding:0 14px 14px"></div>
 <div id="p-short" style="display:none;padding:0 14px 14px"></div>
 <div id="p-analyze" style="display:none;padding:0 14px 14px"></div>
@@ -72,7 +74,7 @@ document.getElementById('tabs').onclick=e=>{
   document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('on'));
   e.target.classList.add('on');
   const t=e.target.dataset.t;
-  ['sector','concept','stock','value','short','analyze','history'].forEach(n=>{
+  ['sector','concept','stock','sentiment','value','short','analyze','history'].forEach(n=>{
     const el=document.getElementById('p-'+n);
     if(el)el.style.display=n===t?'':'none';
     const pred=document.getElementById('p-predict-'+n);
@@ -259,6 +261,52 @@ window.load_short=async()=>{
       </tr>`;
     });
     el.innerHTML=h+'</table></div></div>';
+  }catch(e){el.innerHTML='<div style="color:#ef4444;padding:20px">请求失败</div>'}
+};
+
+/* 市场情绪 */
+window.load_sentiment=async()=>{
+  const el=document.getElementById('p-sentiment');
+  el.innerHTML='<div style="text-align:center;color:#64748b;padding:20px">分析市场情绪中...</div>';
+  try{
+    const r=await fetch('/api/market_sentiment');
+    const j=await r.json();
+    if(j.code!==0){el.innerHTML='<div style="color:#ef4444;padding:20px">数据加载失败</div>';return}
+    const d=j.data;
+    const ov=d.overall, cp=d.capital, bh=d.behavior, fg=d.fear_greed;
+    let h=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">`;
+    h+=`<div class="card" style="min-height:auto;padding:16px"><h3>恐慌贪婪指数</h3>
+      <div style="text-align:center;padding:15px 0">
+        <div style="font-size:36px;font-weight:bold;color:${fg.color}">${fg.score}</div>
+        <div style="font-size:16px;font-weight:bold;color:${fg.color};margin-top:5px">${fg.level}</div>
+        <div style="color:#94a3b8;font-size:12px;margin-top:3px">${fg.desc}</div>
+      </div></div>`;
+    h+=`<div class="card" style="min-height:auto;padding:16px"><h3>市场整体概览</h3>
+      <div style="text-align:center;padding:10px 0">
+        <div style="font-size:24px;font-weight:bold;color:${ov.mood_color}">${ov.mood}</div>
+        <div style="color:#94a3b8;font-size:12px;margin:5px 0">${ov.advice}</div>
+        <div style="display:flex;gap:12px;justify-content:center;margin-top:10px">
+          <div style="text-align:center"><div style="color:#64748b;font-size:10px">上涨</div><div style="color:#ef4444;font-size:18px;font-weight:bold">${ov.up_count}</div></div>
+          <div style="text-align:center"><div style="color:#64748b;font-size:10px">下跌</div><div style="color:#22c55e;font-size:18px;font-weight:bold">${ov.down_count}</div></div>
+          <div style="text-align:center"><div style="color:#64748b;font-size:10px">涨停</div><div style="color:#ef4444;font-size:18px;font-weight:bold">${ov.limit_up}</div></div>
+          <div style="text-align:center"><div style="color:#64748b;font-size:10px">跌停</div><div style="color:#22c55e;font-size:18px;font-weight:bold">${ov.limit_down}</div></div>
+        </div>
+      </div></div>`;
+    h+=`<div class="card" style="min-height:auto;padding:16px"><h3>资金情绪</h3>
+      <div style="padding:10px 0">
+        <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1e293b"><span style="color:#94a3b8">板块资金</span><span style="color:${cp.flow_color};font-weight:bold">${cp.flow_mood}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1e293b"><span style="color:#94a3b8">行业净流入</span><span class="${C(cp.sector_inflow)}">${F(cp.sector_inflow)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1e293b"><span style="color:#94a3b8">概念净流入</span><span class="${C(cp.concept_inflow)}">${F(cp.concept_inflow)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:6px 0"><span style="color:#94a3b8">外盘占比</span><span style="color:${cp.buy_color};font-weight:bold">${cp.outer_ratio}%</span></div>
+      </div></div>`;
+    h+=`<div class="card" style="min-height:auto;padding:16px"><h3>角色行为</h3>
+      <div style="padding:10px 0">
+        <div style="padding:8px;background:#0f172a;border-radius:6px;margin-bottom:8px"><div style="display:flex;justify-content:space-between"><span style="color:#94a3b8">主力</span><span style="color:${bh.main_force.color};font-weight:bold">${bh.main_force.behavior}</span></div><div style="color:#64748b;font-size:11px;margin-top:3px">${bh.main_force.desc}</div></div>
+        <div style="padding:8px;background:#0f172a;border-radius:6px;margin-bottom:8px"><div style="display:flex;justify-content:space-between"><span style="color:#94a3b8">散户</span><span style="color:${bh.retail.color};font-weight:bold">${bh.retail.behavior}</span></div><div style="color:#64748b;font-size:11px;margin-top:3px">${bh.retail.desc}</div></div>
+        <div style="padding:8px;background:#0f172a;border-radius:6px"><div style="display:flex;justify-content:space-between"><span style="color:#94a3b8">机构</span><span style="color:${bh.institution.color};font-weight:bold">${bh.institution.behavior}</span></div><div style="color:#64748b;font-size:11px;margin-top:3px">${bh.institution.desc}</div></div>
+      </div></div>`;
+    h+=`</div>`;
+    el.innerHTML=h;
   }catch(e){el.innerHTML='<div style="color:#ef4444;padding:20px">请求失败</div>'}
 };
 

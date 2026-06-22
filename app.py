@@ -1327,6 +1327,358 @@ def api_short_term():
     return jsonify({"code": 0, "data": result})
 
 
+# ===== 市场情绪分析 =====
+def _get_market_sentiment():
+    """综合市场情绪分析"""
+    result = {
+        "overall": {},
+        "capital": {},
+        "behavior": {},
+        "sector_heat": [],
+        "fear_greed": {},
+    }
+
+    # === 1. 市场整体情绪 ===
+    # 获取大盘指数
+    index_codes = ["sh000001","sz399001","sz399006","sh000300","sh000016"]
+    raw_idx = _curl(f"https://qt.gtimg.cn/q={','.join(index_codes)}",
+                    ["-H", f"User-Agent: {UA}", "-H", "Referer: https://finance.qq.com/"], enc="gbk")
+    indices = []
+    for line in raw_idx.split(";"):
+        line = line.strip()
+        if "=" not in line:
+            continue
+        try:
+            p = line.split("=", 1)[1].strip('"').split("~")
+            if len(p) < 35:
+                continue
+            indices.append({
+                "name": p[1], "code": p[2],
+                "latest": float(p[3] or 0),
+                "pct_change": float(p[32] or 0),
+                "amount": float(p[37] or 0),
+                "high": float(p[33] or 0),
+                "low": float(p[34] or 0),
+            })
+        except Exception:
+            continue
+
+    # 上证指数作为大盘代表
+    sh_index = next((x for x in indices if x["code"] == "000001"), None)
+
+    # 获取涨跌统计 - 用更多股票采样
+    sample_codes = [
+        "sh600519","sh601318","sz000858","sh600036","sz002594",
+        "sz300750","sz002475","sh600900","sz000001","sh601899",
+        "sz002371","sz000651","sz300059","sz002049","sh601166",
+        "sz000568","sz300760","sh600887","sh603288","sz002714",
+        "sh601398","sh600276","sz300274","sh688981","sz002230",
+        "sh600031","sz300015","sz000725","sh600585","sz000002",
+        "sh601688","sh600030","sz002142","sz000333","sh600309",
+        "sh601012","sz002304","sh601088","sh601857","sh601628",
+        "sh601211","sh601919","sh600048","sz000063","sh601669",
+        "sh601766","sh601800","sz000069","sz002027","sh601009",
+        "sh600000","sh601998","sh601390","sh601186","sz000688",
+        "sz002415","sh600809","sh603369","sz002032","sz002241",
+        "sh600745","sh603259","sh601127","sz002032","sz300496",
+        "sh600760","sz000876","sz002601","sh601888","sh600837",
+        "sh601111","sh600111","sz000063","sz002352","sh600050",
+        "sh601398","sh601939","sh601288","sh601328","sh601988",
+        "sh601088","sh601857","sh601628","sh601601","sh601318",
+        "sz000001","sh600036","sz002594","sz300750","sz002475",
+        "sh600900","sh600585","sh601899","sz002371","sz000651",
+    ]
+    sample_codes = list(set(sample_codes))[:80]
+    raw_stocks = _curl(f"https://qt.gtimg.cn/q={','.join(sample_codes)}",
+                       ["-H", f"User-Agent: {UA}", "-H", "Referer: https://finance.qq.com/"], enc="gbk")
+
+    up_count = 0
+    down_count = 0
+    flat_count = 0
+    limit_up = 0
+    limit_down = 0
+    total_amount = 0
+    avg_change = 0
+    changes = []
+    outer_total = 0
+    inner_total = 0
+
+    for line in raw_stocks.split(";"):
+        line = line.strip()
+        if "=" not in line:
+            continue
+        try:
+            p = line.split("=", 1)[1].strip('"').split("~")
+            if len(p) < 50:
+                continue
+            pct = float(p[32] or 0)
+            amount = float(p[37] or 0)
+            outer = float(p[49] or 0) if len(p) > 49 else 0
+            inner = float(p[50] or 0) if len(p) > 50 else 0
+
+            changes.append(pct)
+            total_amount += amount
+            outer_total += outer
+            inner_total += inner
+
+            if pct > 0: up_count += 1
+            elif pct < 0: down_count += 1
+            else: flat_count += 1
+
+            if pct >= 9.9: limit_up += 1
+            elif pct <= -9.9: limit_down += 1
+        except Exception:
+            continue
+
+    if changes:
+        avg_change = sum(changes) / len(changes)
+    total_stocks = up_count + down_count + flat_count
+
+    # 涨跌比
+    up_ratio = up_count / total_stocks * 100 if total_stocks > 0 else 50
+    # 涨停跌停比
+    limit_ratio = limit_up / (limit_up + limit_down) * 100 if (limit_up + limit_down) > 0 else 50
+
+    # 外盘占比(主动买入)
+    vol_total = outer_total + inner_total
+    outer_ratio = outer_total / vol_total * 100 if vol_total > 0 else 50
+
+    # 市场强度评分 (0-100)
+    strength = 0
+    strength += min(30, up_ratio * 0.6)  # 涨跌比贡献0-30
+    strength += min(25, limit_ratio * 0.25)  # 涨停贡献0-25
+    strength += min(20, max(0, avg_change * 5))  # 平均涨幅贡献0-20
+    strength += min(15, outer_ratio * 0.15)  # 买盘贡献0-15
+    if sh_index:
+        strength += min(10, max(0, sh_index["pct_change"] * 3))  # 大盘贡献0-10
+
+    # 情绪状态
+    if strength >= 70:
+        mood = "极度贪婪"
+        mood_color = "#ef4444"
+        mood_emoji = "🔥"
+        advice = "市场过热，注意追高风险，可适当减仓"
+    elif strength >= 55:
+        mood = "贪婪"
+        mood_color = "#f59e0b"
+        mood_emoji = "📈"
+        advice = "市场情绪良好，可正常操作，注意止盈"
+    elif strength >= 45:
+        mood = "中性"
+        mood_color = "#94a3b8"
+        mood_emoji = "😐"
+        advice = "市场方向不明，建议观望为主"
+    elif strength >= 30:
+        mood = "恐慌"
+        mood_color = "#3b82f6"
+        mood_emoji = "📉"
+        advice = "市场恐慌情绪蔓延，可逢低布局优质股"
+    else:
+        mood = "极度恐慌"
+        mood_color = "#22c55e"
+        mood_emoji = "😱"
+        advice = "市场极度恐慌，反而是长线布局的好时机"
+
+    result["overall"] = {
+        "indices": indices,
+        "up_count": up_count,
+        "down_count": down_count,
+        "flat_count": flat_count,
+        "limit_up": limit_up,
+        "limit_down": limit_down,
+        "avg_change": round(avg_change, 2),
+        "total_amount": total_amount,
+        "strength": round(strength),
+        "mood": mood,
+        "mood_color": mood_color,
+        "mood_emoji": mood_emoji,
+        "advice": advice,
+    }
+
+    # === 2. 资金情绪 ===
+    # 板块资金流向
+    sector_data = _sina(0, 20)
+    concept_data = _sina(1, 20)
+
+    # 主力资金统计
+    sector_inflow = sum(s["net_inflow"] for s in sector_data)
+    concept_inflow = sum(s["net_inflow"] for s in concept_data)
+
+    # 资金情绪判断
+    total_flow = sector_inflow + concept_inflow
+    if total_flow > 50e8:
+        flow_mood = "大幅流入"
+        flow_color = "#ef4444"
+    elif total_flow > 10e8:
+        flow_mood = "净流入"
+        flow_color = "#f59e0b"
+    elif total_flow > -10e8:
+        flow_mood = "平衡"
+        flow_color = "#94a3b8"
+    elif total_flow > -50e8:
+        flow_mood = "净流出"
+        flow_color = "#3b82f6"
+    else:
+        flow_mood = "大幅流出"
+        flow_color = "#22c55e"
+
+    # 外盘内盘比
+    if outer_ratio > 55:
+        buy_mood = "主动买入强势"
+        buy_color = "#ef4444"
+    elif outer_ratio > 50:
+        buy_mood = "买入略强"
+        buy_color = "#f59e0b"
+    elif outer_ratio > 45:
+        buy_mood = "买卖平衡"
+        buy_color = "#94a3b8"
+    else:
+        buy_mood = "主动卖出强势"
+        buy_color = "#22c55e"
+
+    result["capital"] = {
+        "sector_inflow": sector_inflow,
+        "concept_inflow": concept_inflow,
+        "total_flow": total_flow,
+        "flow_mood": flow_mood,
+        "flow_color": flow_color,
+        "outer_ratio": round(outer_ratio, 1),
+        "buy_mood": buy_mood,
+        "buy_color": buy_color,
+    }
+
+    # === 3. 不同角色行为情绪 ===
+    # 主力行为: 大单+超大单 = 外盘-内盘的差值反映主力方向
+    main_force_diff = outer_total - inner_total
+    if main_force_diff > 0:
+        main_behavior = "主力建仓"
+        main_desc = "外盘大于内盘，主力正在吸筹"
+        main_color = "#ef4444"
+    else:
+        main_behavior = "主力出货"
+        main_desc = "内盘大于外盘，主力正在减仓"
+        main_color = "#22c55e"
+
+    # 散户行为: 换手率高+涨幅小 = 散户换手
+    avg_turnover = sum(float(line.split("=", 1)[1].strip('"').split("~")[38] or 0)
+                       for line in raw_stocks.split(";") if "=" in line
+                       and len(line.split("=", 1)[1].strip('"').split("~")) > 38) / max(1, total_stocks)
+
+    if avg_turnover > 5:
+        retail_behavior = "散户活跃"
+        retail_desc = "换手率高，散户交易频繁，多空分歧大"
+        retail_color = "#f59e0b"
+    elif avg_turnover > 2:
+        retail_behavior = "散户正常"
+        retail_desc = "换手率适中，散户参与度一般"
+        retail_color = "#94a3b8"
+    else:
+        retail_behavior = "散户冷淡"
+        retail_desc = "换手率低，散户观望情绪浓"
+        retail_color = "#3b82f6"
+
+    # 机构行为: 成交额大+涨跌幅小 = 机构调仓
+    if total_amount > 5000e8:
+        inst_behavior = "机构活跃"
+        inst_desc = "成交额巨大，机构资金频繁调仓"
+        inst_color = "#ef4444"
+    elif total_amount > 2000e8:
+        inst_behavior = "机构正常"
+        inst_desc = "成交额适中，机构按部就班操作"
+        inst_color = "#94a3b8"
+    else:
+        inst_behavior = "机构冷淡"
+        inst_desc = "成交额低迷，机构资金休眠"
+        inst_color = "#3b82f6"
+
+    result["behavior"] = {
+        "main_force": {
+            "behavior": main_behavior,
+            "desc": main_desc,
+            "color": main_color,
+            "diff": main_force_diff,
+        },
+        "retail": {
+            "behavior": retail_behavior,
+            "desc": retail_desc,
+            "color": retail_color,
+            "avg_turnover": round(avg_turnover, 2),
+        },
+        "institution": {
+            "behavior": inst_behavior,
+            "desc": inst_desc,
+            "color": inst_color,
+            "total_amount": total_amount,
+        },
+    }
+
+    # === 4. 板块热度 ===
+    all_sectors = sector_data + concept_data
+    all_sectors.sort(key=lambda x: x["net_inflow"], reverse=True)
+    top_hot = all_sectors[:5]  # 最热门板块(资金流入最多)
+    top_cold = all_sectors[-5:]  # 最冷门板块(资金流出最多)
+    result["sector_heat"] = {
+        "hot": [{"name": s["name"], "net_inflow": s["net_inflow"], "avg_change": s["avg_change"]} for s in top_hot],
+        "cold": [{"name": s["name"], "net_inflow": s["net_inflow"], "avg_change": s["avg_change"]} for s in top_cold],
+    }
+
+    # === 5. 恐慌贪婪指数 ===
+    # 综合多个指标计算
+    fg_score = 50  # 基准50
+    # 涨跌比
+    fg_score += (up_ratio - 50) * 0.3
+    # 涨停跌停
+    fg_score += (limit_ratio - 50) * 0.2
+    # 平均涨幅
+    fg_score += avg_change * 5
+    # 资金流向
+    if total_flow > 0:
+        fg_score += min(10, total_flow / 10e8)
+    else:
+        fg_score += max(-10, total_flow / 10e8)
+    # 外盘比
+    fg_score += (outer_ratio - 50) * 0.2
+
+    fg_score = max(0, min(100, fg_score))
+
+    if fg_score >= 80:
+        fg_level = "极度贪婪"
+        fg_color = "#ef4444"
+        fg_desc = "市场极度乐观，谨防回调"
+    elif fg_score >= 60:
+        fg_level = "贪婪"
+        fg_color = "#f59e0b"
+        fg_desc = "市场情绪偏乐观"
+    elif fg_score >= 40:
+        fg_level = "中性"
+        fg_color = "#94a3b8"
+        fg_desc = "市场情绪平稳"
+    elif fg_score >= 20:
+        fg_level = "恐慌"
+        fg_color = "#3b82f6"
+        fg_desc = "市场恐慌情绪上升"
+    else:
+        fg_level = "极度恐慌"
+        fg_color = "#22c55e"
+        fg_desc = "市场极度悲观，可能是底部"
+
+    result["fear_greed"] = {
+        "score": round(fg_score),
+        "level": fg_level,
+        "color": fg_color,
+        "desc": fg_desc,
+    }
+
+    return result
+
+
+@app.route("/api/market_sentiment")
+def api_market_sentiment():
+    """市场情绪分析"""
+    result = _get_market_sentiment()
+    return jsonify({"code": 0, "data": result})
+
+
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 5000))
