@@ -1806,7 +1806,46 @@ def api_etf():
 
 
 # ===== 交易决策 =====
-def _get_trading_decision(symbol):
+# 缓存机制
+_cache = {}
+_cache_time = {}
+CACHE_TTL = 300  # 5分钟缓存
+
+def _get_cached_data(key, fetch_fn, ttl=CACHE_TTL):
+    """通用缓存函数"""
+    now = time.time()
+    if key in _cache and now - _cache_time.get(key, 0) < ttl:
+        return _cache[key]
+    data = fetch_fn()
+    _cache[key] = data
+    _cache_time[key] = now
+    return data
+
+# 权重预设配置
+WEIGHT_PRESETS = {
+    "balanced": {
+        "name": "均衡模式",
+        "desc": "各维度均衡考虑",
+        "market": 0.25, "sentiment": 0.15, "sector": 0.20, "technical": 0.25, "valuation": 0.15
+    },
+    "market_first": {
+        "name": "大盘优先",
+        "desc": "重视大盘趋势，顺势操作",
+        "market": 0.35, "sentiment": 0.15, "sector": 0.15, "technical": 0.20, "valuation": 0.15
+    },
+    "technical_first": {
+        "name": "技术优先",
+        "desc": "重视个股技术形态",
+        "market": 0.15, "sentiment": 0.10, "sector": 0.15, "technical": 0.40, "valuation": 0.20
+    },
+    "value_first": {
+        "name": "价值优先",
+        "desc": "重视估值和基本面",
+        "market": 0.15, "sentiment": 0.10, "sector": 0.15, "technical": 0.20, "valuation": 0.40
+    },
+}
+
+def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"):
     """综合分析股票，给出买入/卖出/持有建议"""
     # 1. 获取个股分析数据
     analysis = _analyze_stock(symbol, 60)
@@ -1825,16 +1864,19 @@ def _get_trading_decision(symbol):
     ma10 = analysis.get("ma10", [])
     ma20 = analysis.get("ma20", [])
 
-    # 2. 获取市场情绪
-    sentiment = _get_market_sentiment()
+    # 2. 获取市场情绪（带缓存）
+    sentiment = _get_cached_data("sentiment", _get_market_sentiment)
     overall = sentiment.get("overall", {})
     capital = sentiment.get("capital", {})
     fear_greed = sentiment.get("fear_greed", {})
     strength = overall.get("strength", 50)
 
-    # 3. 获取板块资金流向
-    sector_data = _sina(0, 30)
-    concept_data = _sina(1, 30)
+    # 3. 获取板块资金流向（带缓存）
+    sector_data = _get_cached_data("sector_flow", lambda: _sina(0, 30))
+    concept_data = _get_cached_data("concept_flow", lambda: _sina(1, 30))
+
+    # 获取权重配置
+    weights = WEIGHT_PRESETS.get(weight_preset, WEIGHT_PRESETS["balanced"])
 
     # 4. 分析维度打分
     pos_signals = []   # 正面信号
@@ -1842,52 +1884,47 @@ def _get_trading_decision(symbol):
     neu_signals = []   # 中性信号
     score = 50         # 基础分
 
-    # === 维度1: 大盘趋势 (权重25%) ===
+    # === 维度1: 大盘趋势 ===
     sh_index = next((x for x in overall.get("indices", []) if x["code"] == "000001"), None)
     if sh_index:
         sh_pct = sh_index.get("pct_change", 0)
         if sh_pct > 0.5:
             pos_signals.append({"text": "大盘上涨", "detail": f"上证涨{sh_pct:.1f}%，顺势操作"})
-            score += 12
+            score += round(30 * weights["market"])
         elif sh_pct > 0:
             pos_signals.append({"text": "大盘微涨", "detail": "市场偏多"})
-            score += 6
+            score += round(15 * weights["market"])
         elif sh_pct > -0.5:
             neu_signals.append({"text": "大盘横盘", "detail": "方向不明，谨慎为主"})
             score += 0
         else:
             neg_signals.append({"text": "大盘下跌", "detail": f"上证跌{sh_pct:.1f}%，逆势风险大"})
-            score -= 12
+            score -= round(30 * weights["market"])
 
-    # === 维度2: 市场情绪 (权重15%) ===
+    # === 维度2: 市场情绪 ===
     if strength >= 60:
         pos_signals.append({"text": "市场情绪积极", "detail": f"情绪强度{strength}，资金活跃"})
-        score += 8
+        score += round(20 * weights["sentiment"])
     elif strength >= 45:
         neu_signals.append({"text": "市场情绪中性", "detail": f"情绪强度{strength}"})
         score += 0
     else:
         neg_signals.append({"text": "市场情绪低迷", "detail": f"情绪强度{strength}，恐慌情绪"})
-        score -= 8
+        score -= round(20 * weights["sentiment"])
 
-    # === 维度3: 板块资金 (权重20%) ===
-    # 判断个股所属板块是否在热门板块中
-    hot_sectors = [s["name"] for s in sector_data[:10] if s["net_inflow"] > 0]
-    cold_sectors = [s["name"] for s in sector_data[-10:] if s["net_inflow"] < 0]
-
-    # 板块资金流向
+    # === 维度3: 板块资金 ===
     total_sector_flow = sum(s["net_inflow"] for s in sector_data)
     if total_sector_flow > 10e8:
-        pos_signals.append({"text": "板块资金净流入", "detail": f"板块整体资金流入"})
-        score += 10
+        pos_signals.append({"text": "板块资金净流入", "detail": "板块整体资金流入"})
+        score += round(25 * weights["sector"])
     elif total_sector_flow > -10e8:
         neu_signals.append({"text": "板块资金平衡", "detail": "资金流向中性"})
         score += 0
     else:
         neg_signals.append({"text": "板块资金净流出", "detail": "板块整体资金流出"})
-        score -= 10
+        score -= round(25 * weights["sector"])
 
-    # === 维度4: 技术形态 (权重25%) ===
+    # === 维度4: 技术形态 ===
     cur_ma5 = ma5[-1] if ma5 else 0
     cur_ma10 = ma10[-1] if ma10 else 0
     cur_ma20 = ma20[-1] if ma20 else 0
@@ -1895,42 +1932,41 @@ def _get_trading_decision(symbol):
     # 均线多头排列
     if cur_ma5 > cur_ma10 > cur_ma20 > 0:
         pos_signals.append({"text": "均线多头排列", "detail": "5/10/20日线向上发散"})
-        score += 12
+        score += round(30 * weights["technical"])
     elif cur_ma5 < cur_ma10 < cur_ma20 and cur_ma20 > 0:
         neg_signals.append({"text": "均线空头排列", "detail": "5/10/20日线向下发散"})
-        score -= 12
+        score -= round(30 * weights["technical"])
     else:
         neu_signals.append({"text": "均线交织", "detail": "方向不明"})
         score += 0
 
     # 量价配合
-    vol_trend = analysis.get("vol_trend", 1)
+    vol_trend = a.get("vol_trend", 1)
     if vol_trend > 1.5 and pct_change > 0:
         pos_signals.append({"text": "放量上涨", "detail": f"量比{vol_trend:.1f}倍，资金积极介入"})
-        score += 8
+        score += round(20 * weights["technical"])
     elif vol_trend > 1.5 and pct_change < 0:
         neg_signals.append({"text": "放量下跌", "detail": f"量比{vol_trend:.1f}倍，资金出逃"})
-        score -= 8
+        score -= round(20 * weights["technical"])
     elif vol_trend < 0.7 and pct_change > 0:
         neu_signals.append({"text": "缩量上涨", "detail": "主力控盘，散户惜售"})
-        score += 3
+        score += round(5 * weights["technical"])
     elif vol_trend < 0.7 and pct_change < 0:
         pos_signals.append({"text": "缩量下跌", "detail": "抛压减弱，洗盘概率大"})
-        score += 3
+        score += round(5 * weights["technical"])
 
     # 行为识别
     if behavior == "吸筹":
         pos_signals.append({"text": "主力吸筹", "detail": "有资金在收集筹码"})
-        score += 8
+        score += round(15 * weights["technical"])
     elif behavior == "出货":
         neg_signals.append({"text": "主力出货", "detail": "有资金在撤离"})
-        score -= 8
+        score -= round(15 * weights["technical"])
     elif behavior == "洗盘":
         neu_signals.append({"text": "洗盘阶段", "detail": "正常调整，清洗浮筹"})
-        score += 2
+        score += round(3 * weights["technical"])
 
-    # === 维度5: 估值 (权重15%) ===
-    # 从腾讯API获取PE/PB
+    # === 维度5: 估值 ===
     try:
         raw = _curl(f"https://qt.gtimg.cn/q={symbol}",
                     ["-H", f"User-Agent: {UA}", "-H", "Referer: https://finance.qq.com/"], enc="gbk")
@@ -1941,20 +1977,20 @@ def _get_trading_decision(symbol):
 
             if 0 < pe < 15:
                 pos_signals.append({"text": "估值偏低", "detail": f"PE={pe:.1f}，处于历史低位"})
-                score += 8
+                score += round(20 * weights["valuation"])
             elif 15 <= pe < 30:
                 neu_signals.append({"text": "估值适中", "detail": f"PE={pe:.1f}"})
                 score += 0
             elif pe >= 30:
                 neg_signals.append({"text": "估值偏高", "detail": f"PE={pe:.1f}，注意泡沫风险"})
-                score -= 8
+                score -= round(20 * weights["valuation"])
 
             if 0 < pb < 1:
                 pos_signals.append({"text": "破净", "detail": f"PB={pb:.2f}，股价低于净资产"})
-                score += 5
+                score += round(10 * weights["valuation"])
             elif pb >= 5:
                 neg_signals.append({"text": "PB偏高", "detail": f"PB={pb:.2f}"})
-                score -= 3
+                score -= round(5 * weights["valuation"])
     except Exception:
         pe, pb = 0, 0
 
@@ -1962,7 +1998,6 @@ def _get_trading_decision(symbol):
     score = max(0, min(100, score))
 
     # === 生成建议 ===
-    risk_pref = "moderate"  # 默认稳健
     stop_loss_map = {"conservative": 0.02, "moderate": 0.03, "aggressive": 0.05}
     position_map = {"conservative": 0.15, "moderate": 0.20, "aggressive": 0.30}
     stop_loss_pct = stop_loss_map.get(risk_pref, 0.03)
@@ -2016,13 +2051,203 @@ def _get_trading_decision(symbol):
 def api_trading_decision():
     """交易决策API"""
     code = request.args.get("code", "").strip()
+    risk_pref = request.args.get("risk", "moderate")
+    weight_preset = request.args.get("preset", "balanced")
     if not code:
         return jsonify({"code": -1, "msg": "请输入股票代码"})
     symbol = _code_to_symbol(code)
-    result = _get_trading_decision(symbol)
+    result = _get_trading_decision(symbol, risk_pref, weight_preset)
     if not result:
         return jsonify({"code": -1, "msg": f"未找到股票 {code} 的数据"})
+    # 添加权重配置信息
+    result["weight_preset"] = weight_preset
+    result["weight_info"] = WEIGHT_PRESETS.get(weight_preset, {})
     return jsonify({"code": 0, "data": result})
+
+
+# ===== 回测验证 =====
+@app.route("/api/backtest")
+def api_backtest():
+    """回测交易决策评分的准确性"""
+    days = int(request.args.get("days", 30))
+    symbol = request.args.get("symbol", "").strip()
+    
+    # 获取历史日志
+    logs = _load_logs()
+    if not logs:
+        return jsonify({"code": 0, "data": {"total": 0, "msg": "暂无历史数据"}})
+    
+    # 按股票分组
+    stock_logs = {}
+    for log in logs:
+        sym = log.get("symbol", "")
+        if symbol and sym != symbol:
+            continue
+        if sym not in stock_logs:
+            stock_logs[sym] = []
+        stock_logs[sym].append(log)
+    
+    results = []
+    for sym, sym_logs in stock_logs.items():
+        # 按日期排序
+        sym_logs.sort(key=lambda x: x.get("date", ""))
+        
+        for i, log in enumerate(sym_logs):
+            # 计算当时的评分（简化版：基于行为识别）
+            behavior = log.get("behavior", "")
+            base_score = 50
+            if behavior == "吸筹":
+                base_score += 20
+            elif behavior == "出货":
+                base_score -= 20
+            elif behavior == "洗盘":
+                base_score += 5
+            
+            # 检查后续表现
+            future_logs = sym_logs[i+1:i+6]  # 未来5天
+            if not future_logs:
+                continue
+            
+            price_changes = []
+            for fl in future_logs:
+                if "pct_change" in fl:
+                    price_changes.append(fl["pct_change"])
+            
+            if price_changes:
+                avg_change = sum(price_changes) / len(price_changes)
+                # 评分>60建议买入，检查后续是否涨
+                suggestion_correct = (base_score >= 60 and avg_change > 0) or \
+                                    (base_score < 40 and avg_change < 0) or \
+                                    (40 <= base_score < 60)
+                
+                results.append({
+                    "symbol": sym,
+                    "name": log.get("name", ""),
+                    "date": log.get("date", ""),
+                    "score": base_score,
+                    "behavior": behavior,
+                    "future_avg_change": round(avg_change, 2),
+                    "correct": suggestion_correct,
+                })
+    
+    # 统计准确率
+    if results:
+        correct_count = sum(1 for r in results if r["correct"])
+        total = len(results)
+        accuracy = round(correct_count / total * 100, 1) if total > 0 else 0
+        
+        # 按评分区间统计
+        score_ranges = {"60-100": [], "40-60": [], "0-40": []}
+        for r in results:
+            s = r["score"]
+            if s >= 60:
+                score_ranges["60-100"].append(r)
+            elif s >= 40:
+                score_ranges["40-60"].append(r)
+            else:
+                score_ranges["0-40"].append(r)
+        
+        range_stats = {}
+        for range_name, range_logs in score_ranges.items():
+            if range_logs:
+                correct = sum(1 for r in range_logs if r["correct"])
+                range_stats[range_name] = {
+                    "total": len(range_logs),
+                    "correct": correct,
+                    "accuracy": round(correct / len(range_logs) * 100, 1),
+                    "avg_future_change": round(sum(r["future_avg_change"] for r in range_logs) / len(range_logs), 2)
+                }
+        
+        return jsonify({"code": 0, "data": {
+            "total": total,
+            "correct": correct_count,
+            "accuracy": accuracy,
+            "range_stats": range_stats,
+            "details": results[-20:]  # 最近20条
+        }})
+    
+    return jsonify({"code": 0, "data": {"total": 0, "msg": "数据不足"}})
+
+
+# ===== 价格预警 =====
+alerts = {}  # {symbol: [{price, direction, message}]}
+
+@app.route("/api/alert/add", methods=["POST"])
+def api_alert_add():
+    """添加价格预警"""
+    data = request.get_json()
+    if not data:
+        return jsonify({"code": -1, "msg": "无效数据"})
+    
+    symbol = data.get("symbol", "").strip()
+    price = data.get("price")
+    direction = data.get("direction", "above")  # above/below
+    message = data.get("message", "")
+    
+    if not symbol or price is None:
+        return jsonify({"code": -1, "msg": "缺少参数"})
+    
+    if symbol not in alerts:
+        alerts[symbol] = []
+    
+    alerts[symbol].append({
+        "price": float(price),
+        "direction": direction,
+        "message": message,
+        "created": time.time()
+    })
+    
+    return jsonify({"code": 0, "msg": "预警已添加"})
+
+
+@app.route("/api/alert/list")
+def api_alert_list():
+    """获取所有预警"""
+    return jsonify({"code": 0, "data": alerts})
+
+
+@app.route("/api/alert/check")
+def api_alert_check():
+    """检查预警触发"""
+    triggered = []
+    
+    for symbol, alert_list in list(alerts.items()):
+        # 获取当前价格
+        try:
+            raw = _curl(f"https://qt.gtimg.cn/q={symbol}",
+                        ["-H", f"User-Agent: {UA}", "-H", "Referer: https://finance.qq.com/"], enc="gbk")
+            if "=" in raw:
+                p = raw.split("=", 1)[1].strip('"').split("~")
+                current_price = float(p[3] or 0)
+                
+                for alert in alert_list[:]:
+                    if alert["direction"] == "above" and current_price >= alert["price"]:
+                        triggered.append({
+                            "symbol": symbol,
+                            "current": current_price,
+                            "target": alert["price"],
+                            "message": alert["message"],
+                            "direction": "above"
+                        })
+                        alerts[symbol].remove(alert)
+                    elif alert["direction"] == "below" and current_price <= alert["price"]:
+                        triggered.append({
+                            "symbol": symbol,
+                            "current": current_price,
+                            "target": alert["price"],
+                            "message": alert["message"],
+                            "direction": "below"
+                        })
+                        alerts[symbol].remove(alert)
+        except Exception:
+            continue
+    
+    # 清理空列表
+    for sym in list(alerts.keys()):
+        if not alerts[sym]:
+            del alerts[sym]
+    
+    return jsonify({"code": 0, "data": triggered})
 
 
 if __name__ == "__main__":
