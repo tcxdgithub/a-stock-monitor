@@ -1679,6 +1679,132 @@ def api_market_sentiment():
     return jsonify({"code": 0, "data": result})
 
 
+# ===== ETF模块 =====
+def _get_etf_data():
+    """获取ETF数据并分析"""
+    etf_pool = [
+        # 宽基指数ETF
+        "sh510300", "sh510500", "sh510050", "sh510880", "sh513100",
+        "sh513300", "sh513500", "sh159901", "sh159915", "sh159919",
+        "sh159920", "sh159922", "sh512100", "sh512880", "sh588000",
+        "sh588080", "sh588180",
+        # 行业ETF
+        "sh512010", "sh512800", "sh515030", "sh515790", "sh516160",
+        "sh516510", "sh516970", "sh512480", "sh512660", "sh512690",
+        "sh512760", "sh512880", "sh512980", "sh515050", "sh515180",
+        "sh515210", "sh515230", "sh515790", "sh516110", "sh516150",
+        "sh516160", "sh516510", "sh516970", "sh518880", "sh519674",
+        # 跨境ETF
+        "sh513100", "sh513300", "sh513500", "sh159920", "sh159922",
+        # 商品ETF
+        "sh518880", "sh159985",
+        # 债券ETF
+        "sh511010", "sh511260", "sh511380",
+    ]
+    codes = list(set(etf_pool))[:60]
+
+    raw = _curl(f"https://qt.gtimg.cn/q={','.join(codes)}",
+                ["-H", f"User-Agent: {UA}", "-H", "Referer: https://finance.qq.com/"], enc="gbk")
+
+    etfs = []
+    for line in raw.split(";"):
+        line = line.strip()
+        if "=" not in line:
+            continue
+        try:
+            p = line.split("=", 1)[1].strip('"').split("~")
+            if len(p) < 46:
+                continue
+            name = p[1]
+            code = p[2]
+            latest = float(p[3] or 0)
+            pct = float(p[32] or 0)
+            amount = float(p[37] or 0)
+            turnover = float(p[38] or 0)
+            high = float(p[33] or 0)
+            low = float(p[34] or 0)
+            open_price = float(p[5] or 0) if len(p) > 5 else 0
+            prev_close = float(p[4] or 0) if len(p) > 4 else 0
+
+            if latest <= 0:
+                continue
+
+            # 计算振幅
+            amplitude = (high - low) / open_price * 100 if open_price > 0 else 0
+
+            # 判断ETF类型
+            etf_type = "其他"
+            if "510" in code or "15990" in code or "15991" in code or "15992" in code:
+                etf_type = "宽基"
+            elif "512" in code or "515" in code or "516" in code:
+                etf_type = "行业"
+            elif "513" in code:
+                etf_type = "跨境"
+            elif "518" in code or "15998" in code:
+                etf_type = "商品"
+            elif "511" in code:
+                etf_type = "债券"
+
+            etfs.append({
+                "code": code, "name": name, "type": etf_type,
+                "latest": latest, "pct_change": pct,
+                "amount": amount, "turnover": turnover,
+                "high": high, "low": low,
+                "amplitude": round(amplitude, 2),
+            })
+        except Exception:
+            continue
+
+    # 按成交额排序
+    etfs.sort(key=lambda x: x["amount"], reverse=True)
+
+    # 分类统计
+    by_type = {}
+    for e in etfs:
+        t = e["type"]
+        if t not in by_type:
+            by_type[t] = []
+        by_type[t].append(e)
+
+    # 各类型热门ETF
+    hot_etfs = {}
+    for t, items in by_type.items():
+        hot_etfs[t] = items[:5]  # 每类取成交额前5
+
+    # 涨幅榜和跌幅榜
+    sorted_by_change = sorted(etfs, key=lambda x: x["pct_change"], reverse=True)
+    top_gainers = sorted_by_change[:10]
+    top_losers = sorted_by_change[-10:][::-1]  # 倒序取最后10个，再反转
+
+    # 资金流向统计（用成交额近似）
+    total_amount = sum(e["amount"] for e in etfs)
+    up_amount = sum(e["amount"] for e in etfs if e["pct_change"] > 0)
+    down_amount = sum(e["amount"] for e in etfs if e["pct_change"] < 0)
+
+    return {
+        "etfs": etfs[:30],  # 返回成交额前30
+        "hot_by_type": hot_etfs,
+        "top_gainers": top_gainers,
+        "top_losers": top_losers,
+        "stats": {
+            "total": len(etfs),
+            "total_amount": total_amount,
+            "up_count": len([e for e in etfs if e["pct_change"] > 0]),
+            "down_count": len([e for e in etfs if e["pct_change"] < 0]),
+            "flat_count": len([e for e in etfs if e["pct_change"] == 0]),
+            "up_amount": up_amount,
+            "down_amount": down_amount,
+        },
+    }
+
+
+@app.route("/api/etf")
+def api_etf():
+    """ETF数据"""
+    result = _get_etf_data()
+    return jsonify({"code": 0, "data": result})
+
+
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 5000))

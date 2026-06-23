@@ -62,6 +62,7 @@ tr:hover{background:#334155}
 <button data-t="sentiment" style="color:#a855f7">市场情绪</button>
 <button data-t="value" style="color:#f59e0b">低位埋伏</button>
 <button data-t="short" style="color:#ef4444">短线交易</button>
+<button data-t="etf" style="color:#06b6d4">ETF</button>
 <button data-t="analyze">个股分析</button>
 <button data-t="history">历史记录</button>
 </div>
@@ -75,6 +76,7 @@ tr:hover{background:#334155}
 <div id="p-sentiment" style="display:none;padding:0 14px 14px"></div>
 <div id="p-value" style="display:none;padding:0 14px 14px"></div>
 <div id="p-short" style="display:none;padding:0 14px 14px"></div>
+<div id="p-etf" style="display:none;padding:0 14px 14px"></div>
 <div id="p-analyze" style="display:none;padding:0 14px 14px"></div>
 <div id="p-history" style="display:none;padding:0 14px 14px"></div>
 
@@ -90,6 +92,7 @@ tr:hover{background:#334155}
   <div class="modal-item"><label for="cfg-sentiment">市场情绪</label><input type="checkbox" id="cfg-sentiment" data-m="sentiment" checked></div>
   <div class="modal-item"><label for="cfg-value">低位埋伏</label><input type="checkbox" id="cfg-value" data-m="value" checked></div>
   <div class="modal-item"><label for="cfg-short">短线交易</label><input type="checkbox" id="cfg-short" data-m="short" checked></div>
+  <div class="modal-item"><label for="cfg-etf">ETF</label><input type="checkbox" id="cfg-etf" data-m="etf" checked></div>
   <div class="modal-item"><label for="cfg-analyze">个股分析</label><input type="checkbox" id="cfg-analyze" data-m="analyze" checked></div>
   <div class="modal-item"><label for="cfg-history">历史记录</label><input type="checkbox" id="cfg-history" data-m="history" checked></div>
   <div class="modal-btns">
@@ -103,8 +106,8 @@ tr:hover{background:#334155}
 const UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
 const CORS_PROXIES=['https://api.allorigins.win/raw?url=','https://corsproxy.io/?'];
 let CORS=CORS_PROXIES[0];
-const ALL_MODULES=['sector','concept','stock','sentiment','value','short','analyze','history'];
-const MODULE_NAMES={sector:'行业板块',concept:'概念板块',stock:'热门个股',sentiment:'市场情绪',value:'低位埋伏',short:'短线交易',analyze:'个股分析',history:'历史记录'};
+const ALL_MODULES=['sector','concept','stock','sentiment','value','short','etf','analyze','history'];
+const MODULE_NAMES={sector:'行业板块',concept:'概念板块',stock:'热门个股',sentiment:'市场情绪',value:'低位埋伏',short:'短线交易',etf:'ETF',analyze:'个股分析',history:'历史记录'};
 
 const F=v=>{if(v==null||isNaN(v))return'--';let a=Math.abs(v);if(a>=1e12)return(v/1e12).toFixed(2)+'万亿';if(a>=1e8)return(v/1e8).toFixed(2)+'亿';if(a>=1e4)return(v/1e4).toFixed(2)+'万';return v.toFixed(2)};
 const P=v=>v==null?'--':v.toFixed(2)+'%';
@@ -147,7 +150,7 @@ document.getElementById('tabs').onclick=e=>{
   e.target.classList.add('on');
   const t=e.target.dataset.t;
   currentTab=t;
-  ['sector','concept','stock','sentiment','value','short','analyze','history'].forEach(n=>{
+  ['sector','concept','stock','sentiment','value','short','etf','analyze','history'].forEach(n=>{
     const el=document.getElementById('p-'+n);
     if(el)el.style.display=n===t?'':'none';
     const pred=document.getElementById('p-predict-'+n);
@@ -463,6 +466,78 @@ window.load_short=async()=>{
       </tr>`;
     });
     el.innerHTML=h+'</table></div></div>';
+  }catch(e){el.innerHTML='<div class="err">请求失败: '+e.message+'</div>'}
+};
+
+/* ===== ETF ===== */
+window.load_etf=async()=>{
+  const el=document.getElementById('p-etf');
+  el.innerHTML='<div class="loading">加载ETF数据...</div>';
+  try{
+    const r=await fetch('/api/etf');
+    const j=await r.json();
+    if(j.code!==0){el.innerHTML='<div class="err">数据加载失败</div>';return}
+    const d=j.data;
+    const st=d.stats;
+
+    let h=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">`;
+
+    // ETF概况
+    h+=`<div class="card" style="min-height:auto;padding:16px">
+      <h3>ETF市场概况</h3>
+      <div style="padding:10px 0">
+        <div style="display:flex;gap:12px;justify-content:center;margin-bottom:10px">
+          <div style="text-align:center"><div style="color:#64748b;font-size:10px">总数</div><div style="color:#e2e8f0;font-size:18px;font-weight:bold">${st.total}</div></div>
+          <div style="text-align:center"><div style="color:#64748b;font-size:10px">上涨</div><div style="color:#ef4444;font-size:18px;font-weight:bold">${st.up_count}</div></div>
+          <div style="text-align:center"><div style="color:#64748b;font-size:10px">下跌</div><div style="color:#22c55e;font-size:18px;font-weight:bold">${st.down_count}</div></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1e293b"><span style="color:#94a3b8">总成交额</span><span style="color:#e2e8f0;font-weight:bold">${F(st.total_amount)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1e293b"><span style="color:#94a3b8">资金流入</span><span class="cup">${F(st.up_amount)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:6px 0"><span style="color:#94a3b8">资金流出</span><span class="cdn">${F(st.down_amount)}</span></div>
+      </div>
+    </div>`;
+
+    // 各类型热门ETF
+    h+=`<div class="card" style="min-height:auto;padding:16px">
+      <h3>各类型热门ETF</h3>
+      <div style="padding:10px 0">`;
+    const typeColors={宽基:'#3b82f6',行业:'#a855f7',跨境:'#06b6d4',商品:'#f59e0b',债券:'#22c55e'};
+    for(const[type,items]of Object.entries(d.hot_by_type)){
+      if(!items||!items.length)continue;
+      h+=`<div style="margin-bottom:10px"><div style="color:${typeColors[type]||'#94a3b8'};font-weight:bold;font-size:12px;margin-bottom:4px">${type}</div>`;
+      items.slice(0,3).forEach(x=>{
+        h+=`<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:12px"><span style="color:#e2e8f0">${x.name}</span><span class="${C(x.pct_change)}">${P(x.pct_change)}</span></div>`;
+      });
+      h+=`</div>`;
+    }
+    h+=`</div></div>`;
+
+    h+=`</div>`;
+
+    // 涨幅榜
+    h+=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">`;
+    h+=`<div class="card" style="min-height:auto"><h3 style="border-color:#ef4444">📈 涨幅榜</h3><div class="tbl"><table><tr><th>代码</th><th>名称</th><th>类型</th><th>现价</th><th>涨跌</th><th>成交额</th></tr>`;
+    d.top_gainers.forEach(x=>{
+      h+=`<tr><td>${x.code}</td><td>${x.name}</td><td style="color:${typeColors[x.type]||'#94a3b8'}">${x.type}</td><td>${x.latest}</td><td class="cup">${P(x.pct_change)}</td><td>${F(x.amount)}</td></tr>`;
+    });
+    h+=`</table></div></div>`;
+
+    // 跌幅榜
+    h+=`<div class="card" style="min-height:auto"><h3 style="border-color:#22c55e">📉 跌幅榜</h3><div class="tbl"><table><tr><th>代码</th><th>名称</th><th>类型</th><th>现价</th><th>涨跌</th><th>成交额</th></tr>`;
+    d.top_losers.forEach(x=>{
+      h+=`<tr><td>${x.code}</td><td>${x.name}</td><td style="color:${typeColors[x.type]||'#94a3b8'}">${x.type}</td><td>${x.latest}</td><td class="cdn">${P(x.pct_change)}</td><td>${F(x.amount)}</td></tr>`;
+    });
+    h+=`</table></div></div>`;
+    h+=`</div>`;
+
+    // 成交额排行
+    h+=`<div class="card" style="margin-top:10px;min-height:auto"><h3>成交额排行 TOP20</h3><div class="tbl"><table><tr><th>代码</th><th>名称</th><th>类型</th><th>现价</th><th>涨跌</th><th>成交额</th><th>换手%</th></tr>`;
+    d.etfs.slice(0,20).forEach(x=>{
+      h+=`<tr><td>${x.code}</td><td>${x.name}</td><td style="color:${typeColors[x.type]||'#94a3b8'}">${x.type}</td><td>${x.latest}</td><td class="${C(x.pct_change)}">${P(x.pct_change)}</td><td>${F(x.amount)}</td><td>${x.turnover}%</td></tr>`;
+    });
+    h+=`</table></div></div>`;
+
+    el.innerHTML=h;
   }catch(e){el.innerHTML='<div class="err">请求失败: '+e.message+'</div>'}
 };
 
