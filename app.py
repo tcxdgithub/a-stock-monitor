@@ -1805,6 +1805,226 @@ def api_etf():
     return jsonify({"code": 0, "data": result})
 
 
+# ===== 交易决策 =====
+def _get_trading_decision(symbol):
+    """综合分析股票，给出买入/卖出/持有建议"""
+    # 1. 获取个股分析数据
+    analysis = _analyze_stock(symbol, 60)
+    if not analysis:
+        return None
+
+    name = analysis["name"]
+    code = analysis["symbol"]
+    latest = analysis["latest"]
+    pct_change = analysis["pct_change"]
+    a = analysis.get("analysis", {})
+    behavior = a.get("behavior", "")
+    signals = a.get("signals", [])
+    kline = analysis.get("kline", [])
+    ma5 = analysis.get("ma5", [])
+    ma10 = analysis.get("ma10", [])
+    ma20 = analysis.get("ma20", [])
+
+    # 2. 获取市场情绪
+    sentiment = _get_market_sentiment()
+    overall = sentiment.get("overall", {})
+    capital = sentiment.get("capital", {})
+    fear_greed = sentiment.get("fear_greed", {})
+    strength = overall.get("strength", 50)
+
+    # 3. 获取板块资金流向
+    sector_data = _sina(0, 30)
+    concept_data = _sina(1, 30)
+
+    # 4. 分析维度打分
+    pos_signals = []   # 正面信号
+    neg_signals = []   # 负面信号
+    neu_signals = []   # 中性信号
+    score = 50         # 基础分
+
+    # === 维度1: 大盘趋势 (权重25%) ===
+    sh_index = next((x for x in overall.get("indices", []) if x["code"] == "000001"), None)
+    if sh_index:
+        sh_pct = sh_index.get("pct_change", 0)
+        if sh_pct > 0.5:
+            pos_signals.append({"text": "大盘上涨", "detail": f"上证涨{sh_pct:.1f}%，顺势操作"})
+            score += 12
+        elif sh_pct > 0:
+            pos_signals.append({"text": "大盘微涨", "detail": "市场偏多"})
+            score += 6
+        elif sh_pct > -0.5:
+            neu_signals.append({"text": "大盘横盘", "detail": "方向不明，谨慎为主"})
+            score += 0
+        else:
+            neg_signals.append({"text": "大盘下跌", "detail": f"上证跌{sh_pct:.1f}%，逆势风险大"})
+            score -= 12
+
+    # === 维度2: 市场情绪 (权重15%) ===
+    if strength >= 60:
+        pos_signals.append({"text": "市场情绪积极", "detail": f"情绪强度{strength}，资金活跃"})
+        score += 8
+    elif strength >= 45:
+        neu_signals.append({"text": "市场情绪中性", "detail": f"情绪强度{strength}"})
+        score += 0
+    else:
+        neg_signals.append({"text": "市场情绪低迷", "detail": f"情绪强度{strength}，恐慌情绪"})
+        score -= 8
+
+    # === 维度3: 板块资金 (权重20%) ===
+    # 判断个股所属板块是否在热门板块中
+    hot_sectors = [s["name"] for s in sector_data[:10] if s["net_inflow"] > 0]
+    cold_sectors = [s["name"] for s in sector_data[-10:] if s["net_inflow"] < 0]
+
+    # 板块资金流向
+    total_sector_flow = sum(s["net_inflow"] for s in sector_data)
+    if total_sector_flow > 10e8:
+        pos_signals.append({"text": "板块资金净流入", "detail": f"板块整体资金流入"})
+        score += 10
+    elif total_sector_flow > -10e8:
+        neu_signals.append({"text": "板块资金平衡", "detail": "资金流向中性"})
+        score += 0
+    else:
+        neg_signals.append({"text": "板块资金净流出", "detail": "板块整体资金流出"})
+        score -= 10
+
+    # === 维度4: 技术形态 (权重25%) ===
+    cur_ma5 = ma5[-1] if ma5 else 0
+    cur_ma10 = ma10[-1] if ma10 else 0
+    cur_ma20 = ma20[-1] if ma20 else 0
+
+    # 均线多头排列
+    if cur_ma5 > cur_ma10 > cur_ma20 > 0:
+        pos_signals.append({"text": "均线多头排列", "detail": "5/10/20日线向上发散"})
+        score += 12
+    elif cur_ma5 < cur_ma10 < cur_ma20 and cur_ma20 > 0:
+        neg_signals.append({"text": "均线空头排列", "detail": "5/10/20日线向下发散"})
+        score -= 12
+    else:
+        neu_signals.append({"text": "均线交织", "detail": "方向不明"})
+        score += 0
+
+    # 量价配合
+    vol_trend = analysis.get("vol_trend", 1)
+    if vol_trend > 1.5 and pct_change > 0:
+        pos_signals.append({"text": "放量上涨", "detail": f"量比{vol_trend:.1f}倍，资金积极介入"})
+        score += 8
+    elif vol_trend > 1.5 and pct_change < 0:
+        neg_signals.append({"text": "放量下跌", "detail": f"量比{vol_trend:.1f}倍，资金出逃"})
+        score -= 8
+    elif vol_trend < 0.7 and pct_change > 0:
+        neu_signals.append({"text": "缩量上涨", "detail": "主力控盘，散户惜售"})
+        score += 3
+    elif vol_trend < 0.7 and pct_change < 0:
+        pos_signals.append({"text": "缩量下跌", "detail": "抛压减弱，洗盘概率大"})
+        score += 3
+
+    # 行为识别
+    if behavior == "吸筹":
+        pos_signals.append({"text": "主力吸筹", "detail": "有资金在收集筹码"})
+        score += 8
+    elif behavior == "出货":
+        neg_signals.append({"text": "主力出货", "detail": "有资金在撤离"})
+        score -= 8
+    elif behavior == "洗盘":
+        neu_signals.append({"text": "洗盘阶段", "detail": "正常调整，清洗浮筹"})
+        score += 2
+
+    # === 维度5: 估值 (权重15%) ===
+    # 从腾讯API获取PE/PB
+    try:
+        raw = _curl(f"https://qt.gtimg.cn/q={symbol}",
+                    ["-H", f"User-Agent: {UA}", "-H", "Referer: https://finance.qq.com/"], enc="gbk")
+        if "=" in raw:
+            p = raw.split("=", 1)[1].strip('"').split("~")
+            pe = float(p[39] or 0) if len(p) > 39 else 0
+            pb = float(p[46] or 0) if len(p) > 46 else 0
+
+            if 0 < pe < 15:
+                pos_signals.append({"text": "估值偏低", "detail": f"PE={pe:.1f}，处于历史低位"})
+                score += 8
+            elif 15 <= pe < 30:
+                neu_signals.append({"text": "估值适中", "detail": f"PE={pe:.1f}"})
+                score += 0
+            elif pe >= 30:
+                neg_signals.append({"text": "估值偏高", "detail": f"PE={pe:.1f}，注意泡沫风险"})
+                score -= 8
+
+            if 0 < pb < 1:
+                pos_signals.append({"text": "破净", "detail": f"PB={pb:.2f}，股价低于净资产"})
+                score += 5
+            elif pb >= 5:
+                neg_signals.append({"text": "PB偏高", "detail": f"PB={pb:.2f}"})
+                score -= 3
+    except Exception:
+        pe, pb = 0, 0
+
+    # === 限制分数范围 ===
+    score = max(0, min(100, score))
+
+    # === 生成建议 ===
+    risk_pref = "moderate"  # 默认稳健
+    stop_loss_map = {"conservative": 0.02, "moderate": 0.03, "aggressive": 0.05}
+    position_map = {"conservative": 0.15, "moderate": 0.20, "aggressive": 0.30}
+    stop_loss_pct = stop_loss_map.get(risk_pref, 0.03)
+    target_position = position_map.get(risk_pref, 0.20)
+
+    stop_loss_price = round(latest * (1 - stop_loss_pct), 2)
+
+    if score >= 70:
+        suggestion = "可以买入"
+        advice_color = "#22c55e"
+        advice_emoji = "✅"
+    elif score >= 55:
+        suggestion = "谨慎买入"
+        advice_color = "#f59e0b"
+        advice_emoji = "⚠️"
+    elif score >= 45:
+        suggestion = "观望"
+        advice_color = "#94a3b8"
+        advice_emoji = "⏸️"
+    elif score >= 30:
+        suggestion = "谨慎持有/减仓"
+        advice_color = "#f59e0b"
+        advice_emoji = "⚠️"
+    else:
+        suggestion = "建议卖出"
+        advice_color = "#ef4444"
+        advice_emoji = "🔴"
+
+    return {
+        "symbol": code,
+        "name": name,
+        "latest": latest,
+        "pct_change": pct_change,
+        "behavior": behavior,
+        "score": round(score),
+        "suggestion": suggestion,
+        "advice_color": advice_color,
+        "advice_emoji": advice_emoji,
+        "stop_loss_price": stop_loss_price,
+        "stop_loss_pct": round(stop_loss_pct * 100, 1),
+        "target_position": round(target_position * 100),
+        "pos_signals": pos_signals,
+        "neg_signals": neg_signals,
+        "neu_signals": neu_signals,
+        "market_strength": strength,
+        "market_mood": overall.get("mood", "中性"),
+    }
+
+
+@app.route("/api/trading_decision")
+def api_trading_decision():
+    """交易决策API"""
+    code = request.args.get("code", "").strip()
+    if not code:
+        return jsonify({"code": -1, "msg": "请输入股票代码"})
+    symbol = _code_to_symbol(code)
+    result = _get_trading_decision(symbol)
+    if not result:
+        return jsonify({"code": -1, "msg": f"未找到股票 {code} 的数据"})
+    return jsonify({"code": 0, "data": result})
+
+
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 5000))

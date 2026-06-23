@@ -92,6 +92,15 @@ tr:hover{background:#334155}
   <div class="modal-item"><label for="cfg-etf">ETF</label><input type="checkbox" id="cfg-etf" data-m="etf" checked></div>
   <div class="modal-item"><label for="cfg-analyze">个股分析</label><input type="checkbox" id="cfg-analyze" data-m="analyze" checked></div>
   <div class="modal-item"><label for="cfg-history">历史记录</label><input type="checkbox" id="cfg-history" data-m="history" checked></div>
+  <div style="border-top:1px solid #334155;margin:10px 0"></div>
+  <div class="modal-item">
+    <label>风险偏好</label>
+    <select id="cfg-risk" style="padding:6px 10px;border:1px solid #334155;border-radius:4px;background:#0f172a;color:#e2e8f0;font-size:13px">
+      <option value="conservative">保守（止损-2%，仓位15%）</option>
+      <option value="moderate" selected>稳健（止损-3%，仓位20%）</option>
+      <option value="aggressive">激进（止损-5%，仓位30%）</option>
+    </select>
+  </div>
   <div class="modal-btns">
     <button class="btn-cancel" onclick="closeConfig()">取消</button>
     <button class="btn-save" onclick="saveConfig()">保存</button>
@@ -114,6 +123,8 @@ function setConfig(cfg){localStorage.setItem('stock_modules_config',JSON.stringi
 function openConfig(){
   const cfg=getConfig()||ALL_MODULES;
   document.querySelectorAll('#config-modal input[type=checkbox]').forEach(cb=>{cb.checked=cfg.includes(cb.dataset.m)});
+  const riskPref=localStorage.getItem('riskPref')||'moderate';
+  document.getElementById('cfg-risk').value=riskPref;
   document.getElementById('config-modal').style.display='flex';
 }
 function closeConfig(){document.getElementById('config-modal').style.display='none'}
@@ -121,6 +132,8 @@ function saveConfig(){
   const selected=[];
   document.querySelectorAll('#config-modal input[type=checkbox]:checked').forEach(cb=>{selected.push(cb.dataset.m)});
   if(!selected.length){alert('至少选择一个模块');return}
+  const riskPref=document.getElementById('cfg-risk').value;
+  localStorage.setItem('riskPref',riskPref);
   setConfig(selected);applyConfig(selected);closeConfig();
 }
 function applyConfig(modules){
@@ -488,6 +501,7 @@ async function doAnalyze(){
 function renderAnalysis(d){
   const a=d.analysis;
   const html=`
+  <div id="trading-decision-area"></div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
     <div class="card">
       <h3>${d.name} (${d.symbol}) K线 + 均线</h3>
@@ -590,6 +604,116 @@ function renderAnalysis(d){
     });
     window.addEventListener('resize',()=>{c.resize();c2.resize()});
   },50);
+  // 异步加载交易决策
+  loadTradingDecision(d.symbol);
+}
+
+/* 交易决策 */
+async function loadTradingDecision(code){
+  const el=document.getElementById('trading-decision-area');
+  if(!el)return;
+  el.innerHTML='<div style="background:#1e293b;border-radius:8px;padding:12px;margin-bottom:10px;text-align:center;color:#64748b">📊 交易决策分析中...</div>';
+  try{
+    const r=await fetch('/api/trading_decision?code='+encodeURIComponent(code));
+    const j=await r.json();
+    if(j.code!==0){el.innerHTML='';return}
+    renderTradingDecision(j.data,code);
+  }catch(e){el.innerHTML=''}
+}
+
+function renderTradingDecision(d,code){
+  const el=document.getElementById('trading-decision-area');
+  if(!el)return;
+  // 读取持仓记录
+  const positions=JSON.parse(localStorage.getItem('positions')||'{}');
+  const pos=positions[code];
+  const riskPref=localStorage.getItem('riskPref')||'moderate';
+  const posHtml=pos?
+    `<span style="color:#ef4444">持仓中（成本 ${pos.cost}，数量 ${pos.qty}，${pos.date}买入）</span>
+     <button onclick="clearPosition('${code}')" style="margin-left:8px;padding:2px 8px;background:#ef4444;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer">清仓</button>`:
+    `<span style="color:#64748b">空仓</span>
+     <button onclick="openPositionModal('${code}','${d.name}',${d.latest})" style="margin-left:8px;padding:2px 8px;background:#22c55e;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer">记录持仓</button>`;
+
+  el.innerHTML=`
+  <div style="background:#1e293b;border-radius:8px;padding:12px;margin-bottom:10px;border:1px solid #334155">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <h3 style="font-size:14px;color:#3b82f6;margin:0">📊 交易决策</h3>
+      <div style="font-size:12px">${posHtml}</div>
+    </div>
+    <div style="display:flex;gap:16px;font-size:12px;margin-bottom:8px">
+      <div style="flex:1">
+        <div style="color:#22c55e;margin-bottom:4px">✅ 利多（${d.pos_signals.length}项）</div>
+        ${d.pos_signals.map(s=>'<div style="padding:1px 0;color:#e2e8f0"><span style="font-weight:bold">·</span> '+s.text+' <span style="color:#64748b;font-size:10px">'+s.detail+'</span></div>').join('')||'<div style="color:#475569">无</div>'}
+      </div>
+      <div style="flex:1">
+        <div style="color:#f59e0b;margin-bottom:4px">⚠️ 中性（${d.neu_signals.length}项）</div>
+        ${d.neu_signals.map(s=>'<div style="padding:1px 0;color:#e2e8f0"><span style="font-weight:bold">·</span> '+s.text+' <span style="color:#64748b;font-size:10px">'+s.detail+'</span></div>').join('')||'<div style="color:#475569">无</div>'}
+      </div>
+      <div style="flex:1">
+        <div style="color:#ef4444;margin-bottom:4px">❌ 利空（${d.neg_signals.length}项）</div>
+        ${d.neg_signals.map(s=>'<div style="padding:1px 0;color:#e2e8f0"><span style="font-weight:bold">·</span> '+s.text+' <span style="color:#64748b;font-size:10px">'+s.detail+'</span></div>').join('')||'<div style="color:#475569">无</div>'}
+      </div>
+    </div>
+    <div style="background:#0f172a;border-radius:6px;padding:10px;display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <div style="font-size:12px;color:#64748b">综合评分</div>
+        <div style="font-size:24px;font-weight:bold;color:${d.advice_color}">${d.score}/100</div>
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:18px">${d.advice_emoji}</div>
+        <div style="font-size:14px;font-weight:bold;color:${d.advice_color}">${d.suggestion}</div>
+      </div>
+      <div style="text-align:right;font-size:12px">
+        <div style="color:#64748b">止损位 <span style="color:#ef4444;font-weight:bold">${d.stop_loss_price}</span>（-${d.stop_loss_pct}%）</div>
+        <div style="color:#64748b">目标仓位 <span style="color:#22c55e;font-weight:bold">${d.target_position}%</span></div>
+        <div style="color:#64748b;margin-top:4px;font-size:10px">大盘：${d.market_mood}（${d.market_strength}分）</div>
+      </div>
+    </div>
+    <div style="text-align:center;font-size:10px;color:#475569;margin-top:6px">仅供参考，不构成投资建议</div>
+  </div>`;
+}
+
+/* 持仓管理 */
+function openPositionModal(code,name,price){
+  const html=`
+  <div class="modal-overlay" id="pos-modal" onclick="if(event.target===this)this.remove()">
+    <div class="modal">
+      <h3>记录持仓 - ${name}</h3>
+      <div class="modal-item">
+        <label>成本价</label>
+        <input id="pos-cost" type="number" step="0.01" value="${price}" style="width:100px;padding:6px;border:1px solid #334155;border-radius:4px;background:#0f172a;color:#e2e8f0">
+      </div>
+      <div class="modal-item">
+        <label>数量（股）</label>
+        <input id="pos-qty" type="number" step="100" value="100" style="width:100px;padding:6px;border:1px solid #334155;border-radius:4px;background:#0f172a;color:#e2e8f0">
+      </div>
+      <div class="modal-btns">
+        <button class="btn-cancel" onclick="document.getElementById('pos-modal').remove()">取消</button>
+        <button class="btn-save" onclick="savePosition('${code}')">保存</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.insertAdjacentHTML('beforeend',html);
+}
+
+function savePosition(code){
+  const cost=parseFloat(document.getElementById('pos-cost').value);
+  const qty=parseInt(document.getElementById('pos-qty').value);
+  if(!cost||!qty){alert('请输入有效数值');return}
+  const positions=JSON.parse(localStorage.getItem('positions')||'{}');
+  positions[code]={cost,qty,date:new Date().toISOString().slice(0,10)};
+  localStorage.setItem('positions',JSON.stringify(positions));
+  document.getElementById('pos-modal').remove();
+  // 刷新交易决策
+  loadTradingDecision(code);
+}
+
+function clearPosition(code){
+  if(!confirm('确认清仓记录？'))return;
+  const positions=JSON.parse(localStorage.getItem('positions')||'{}');
+  delete positions[code];
+  localStorage.setItem('positions',JSON.stringify(positions));
+  loadTradingDecision(code);
 }
 
 /* 历史记录 */
