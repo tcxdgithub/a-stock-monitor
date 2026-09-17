@@ -3,4 +3,8 @@ __pycache__/
 *.pyo
 logs/
 test_*.py
+test_*.json
 .env
+*.log
+server_*.txt
+short_history/
