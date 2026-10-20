@@ -1159,30 +1159,30 @@ def _analyze_stock(symbol, days=60):
     # 规则1: 急跌后缩量企稳 → 底部吸筹
     if change_20d < -15 and vol_ratio < 0.8 and abs(change_5d) < 3:
         score_xichou += 5
-        signals.append({"text": "急跌后缩量企稳,主力可能逢低吸筹", "weight": 5, "type": "吸筹"})
+        signals.append({"text": "急跌后缩量企稳,主力可能逢低吸筹", "weight": 25, "type": "吸筹"})
 
     # 规则2: 暴跌后放量反弹 → 超跌反弹/试探性建仓
     if change_20d < -15 and change_5d > 5 and vol_ratio > 1.5:
         score_xichou += 25
-        signals.append({"text": "暴跌后放量反弹,资金试探性介入", "weight": 25, "type": "吸筹"})
+        signals.append({"text": "暴跌后放量反弹,资金试探性介入", "weight": 20, "type": "吸筹"})
 
     # 规则4: 放量长上影线 → 拉高出货
     last = data[-1]
     upper_shadow = (last["high"] - max(last["open"], last["close"])) / last["open"] * 100
     if upper_shadow > 3 and vol_ratio > 1.5:
         score_chuhuo += 25
-        signals.append({"text": "放量长上影线,拉高后遭遇抛压,注意出货", "weight": 25, "type": "出货"})
+        signals.append({"text": "放量长上影线,拉高后遭遇抛压,注意出货", "weight": 30, "type": "出货"})
 
     # 规则5: 底部长下影阳线 → 止跌信号
     lower_shadow = (min(last["open"], last["close"]) - last["low"]) / last["open"] * 100
     if lower_shadow > 2 and last["close"] > last["open"] and near_low:
         score_xichou += 25
-        signals.append({"text": "底部长下影阳线,止跌信号明确", "weight": 25, "type": "吸筹"})
+        signals.append({"text": "底部长下影阳线,止跌信号明确", "weight": 5, "type": "吸筹"})
 
     # 规则6: 高位横盘放量 → 派发
     if abs(change_5d) < 2 and change_20d > 10 and vol_ratio > 1.3:
         score_chuhuo += 10
-        signals.append({"text": "高位横盘放量,主力可能派发筹码", "weight": 10, "type": "出货"})
+        signals.append({"text": "高位横盘放量,主力可能派发筹码", "weight": 5, "type": "出货"})
 
     # 规则7: 连续缩量3日以上 → 抛压衰竭
     if all(volumes[-i] < volumes[-i - 1] for i in range(1, min(4, len(volumes)))):
@@ -1192,7 +1192,7 @@ def _analyze_stock(symbol, days=60):
     # 规则8: 放量突破MA5 → 短期转强
     if ma5[-1] and cur > ma5[-1] and data[-2]["close"] < ma5[-2] and vol_ratio > 1.2:
         score_xichou += 15
-        signals.append({"text": "放量突破MA5,短期趋势转强", "weight": 15, "type": "吸筹"})
+        signals.append({"text": "放量突破MA5,短期趋势转强", "weight": 5, "type": "吸筹"})
 
     # 规则10: 量价背离(价涨量缩) → 上涨乏力
     if change_5d > 2 and vol_ratio < 0.7:
@@ -1210,13 +1210,13 @@ def _analyze_stock(symbol, days=60):
     if all(d["close"] > d["open"] for d in last3) and all(abs(d["close"] - d["open"]) / d["open"] * 100 < 2 for d in last3):
         if near_low:
             score_xichou += 25
-            signals.append({"text": "底部连续小阳线,主力缓慢建仓迹象", "weight": 25, "type": "吸筹"})
+            signals.append({"text": "底部连续小阳线,主力缓慢建仓迹象", "weight": 15, "type": "吸筹"})
 
     # === 洗盘规则 ===
     # 规则W1: 涨幅后缩量回调 → 洗盘（主力不卖，散户恐慌）
     if change_20d > 10 and change_5d < -3 and vol_ratio < 0.7:
         score_xipan += 25
-        signals.append({"text": "涨幅后缩量回调,主力可能洗盘,清洗浮筹", "weight": 25, "type": "洗盘"})
+        signals.append({"text": "涨幅后缩量回调,主力可能洗盘,清洗浮筹", "weight": 5, "type": "洗盘"})
 
     # 规则W2: 回调不破MA20 → 强势洗盘
     if ma20[-1] and cur > ma20[-1] and change_5d < -2 and vol_ratio < 0.8:
@@ -1235,13 +1235,13 @@ def _analyze_stock(symbol, days=60):
     high_to_close = (last["high"] - last["close"]) / last["high"] * 100 if last["high"] > 0 else 0
     if high_to_close > 3 and vol_ratio_5 > 1.2:
         score_chuhuo += 25
-        signals.append({"text": f"冲高回落(高点回落{high_to_close:.1f}%),上方抛压沉重", "weight": 25, "type": "出货"})
+        signals.append({"text": f"冲高回落(高点回落{high_to_close:.1f}%),上方抛压沉重", "weight": 30, "type": "出货"})
 
     # 规则C3: 放量跌破MA5+MA20 → 断头铡刀
     if ma5[-1] and ma20[-1] and cur < ma5[-1] and cur < ma20[-1]:
         if data[-2]["close"] > ma5[-2] and vol_ratio_5 > 1.3:
             score_chuhuo += 30
-            signals.append({"text": "放量跌破MA5和MA20,断头铡刀形态,趋势转弱", "weight": 30, "type": "出货"})
+            signals.append({"text": "放量跌破MA5和MA20,断头铡刀形态,趋势转弱", "weight": 25, "type": "出货"})
 
     # 规则C4: 连续2日放量下跌 → 加速出货
     if len(data) >= 3:
@@ -1250,7 +1250,7 @@ def _analyze_stock(symbol, days=60):
         prev_vol_ratio_5 = volumes[-2] / vol_5 if vol_5 > 0 else 1
         if day_change_pct < -1 and prev_change < -1 and vol_ratio_5 > 1.2 and prev_vol_ratio_5 > 1.2:
             score_chuhuo += 30
-            signals.append({"text": "连续两日放量下跌,主力加速出货", "weight": 30, "type": "出货"})
+            signals.append({"text": "连续两日放量下跌,主力加速出货", "weight": 35, "type": "出货"})
 
     # 规则C5: 高位长上影+缩量 → 拉高试盘失败
     if upper_shadow > 2 and vol_ratio_5 < 0.8 and change_20d > 10:
@@ -1267,12 +1267,12 @@ def _analyze_stock(symbol, days=60):
     # 规则W3: 放量下跌后快速缩量 → 恐慌盘涌出后洗盘结束
     if len(volumes) >= 3 and volumes[-3] > vol_20 * 1.3 and volumes[-1] < vol_20 * 0.7:
         score_xipan += 5
-        signals.append({"text": "放量下跌后快速缩量,恐慌盘涌出,洗盘可能接近尾声", "weight": 5, "type": "洗盘"})
+        signals.append({"text": "放量下跌后快速缩量,恐慌盘涌出,洗盘可能接近尾声", "weight": 10, "type": "洗盘"})
 
     # 规则W4: 横盘震荡中量能萎缩 → 主力洗盘等时机
     if abs(change_5d) < 3 and abs(change_20d) < 8 and vol_ratio < 0.75:
         score_xipan += 8
-        signals.append({"text": "横盘缩量震荡,主力可能在洗盘等待时机", "weight": 8, "type": "洗盘"})
+        signals.append({"text": "横盘缩量震荡,主力可能在洗盘等待时机", "weight": 25, "type": "洗盘"})
 
     # 规则W5: 跌破MA5但守住MA20 → 假跌破洗盘
     if ma5[-1] and ma20[-1] and cur < ma5[-1] and cur > ma20[-1] and change_5d < -2:

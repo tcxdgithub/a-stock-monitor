@@ -958,15 +958,18 @@ async function doAnalyze(){
 function renderAnalysis(d){
   const a=d.analysis;
   const stockCode=d.symbol.replace(/^(sh|sz)/,'');
-  const actCol=a.position_advice?(a.position_advice.action==='加仓'?'#22c55e':a.position_advice.action==='减仓'?'#ef4444':'#94a3b8'):'#94a3b8';
+  const actCol=a.position_advice?(/加仓|建仓/.test(a.position_advice.action)?'#22c55e':/减仓|止盈|止损/.test(a.position_advice.action)?'#ef4444':'#94a3b8'):'#94a3b8';
   const act=a.position_advice||{};
+  const pCol=(a.prob_label==='偏多'||a.prob_label==='温和偏多')?'#22c55e':(a.prob_label==='偏空'||a.prob_label==='空头')?'#ef4444':'#f59e0b';
   const kpis=[
-    ['吸筹',a.score_xichou+'%','#ef4444'],['洗盘',a.score_xipan+'%','#22c55e'],['出货',(a.score_chuhuo||0)+'%','#f59e0b'],
-    ['量能',a.vol_level,a.vol_level=='天量'?'#ef4444':a.vol_level=='放量'?'#f59e0b':a.vol_level=='地量'?'#22c55e':'#e2e8f0'],
-    ['配合',a.vp_harmony+'分',a.vp_harmony>=70?'#22c55e':a.vp_harmony<=30?'#ef4444':'#f59e0b'],
-    ['5日',P(a.price_change_5d),a.price_change_5d>0?'#ef4444':'#22c55e'],
-    ['20日',P(a.price_change_20d),a.price_change_20d>0?'#ef4444':'#22c55e'],
-    ['回撤',P(a.drawdown),'#f59e0b'],
+    ['吸筹',a.score_xichou+'%','#16a34a','吸筹信号强度(0-100,由规则权重累计)'],
+    ['洗盘',a.score_xipan+'%','#3b82f6','洗盘信号强度(0-100,由规则权重累计)'],
+    ['出货',(a.score_chuhuo||0)+'%','#f59e0b','出货信号强度(0-100,由规则权重累计)'],
+    ['量能',a.vol_level,a.vol_level=='天量'?'#ef4444':a.vol_level=='放量'?'#f59e0b':a.vol_level=='地量'?'#22c55e':'#e2e8f0','量能级别: 天量/放量/缩量/地量'],
+    ['配合',a.vp_harmony+'分',a.vp_harmony>=70?'#22c55e':a.vp_harmony<=30?'#ef4444':'#f59e0b','量价配合度评分'],
+    ['5日',P(a.price_change_5d),a.price_change_5d>0?'#ef4444':'#22c55e','近5日涨跌幅'],
+    ['20日',P(a.price_change_20d),a.price_change_20d>0?'#ef4444':'#22c55e','近20日涨跌幅'],
+    ['回撤',P(a.drawdown),'#f59e0b','近60日最大回撤'],
   ];
   const html=`
   <div id="trading-decision-area"></div>
@@ -981,12 +984,12 @@ function renderAnalysis(d){
       <span style="color:#64748b;font-size:11px">现价 </span><b style="color:#f1f5f9;font-size:16px">${d.latest}</b>
       <b class="${C(d.pct_change)}" style="margin-left:6px">${P(d.pct_change)}</b>
     </div>
-    <div style="padding:10px 14px;border-right:1px solid #1e293b;white-space:nowrap">
+    <div style="padding:10px 14px;border-right:1px solid #1e293b;white-space:nowrap" title="${(a.behavior_desc||'').replace(/"/g,'&quot;')}">
       <span style="display:inline-block;padding:3px 14px;border-radius:14px;background:${a.behavior_color}18;border:1.5px solid ${a.behavior_color};color:${a.behavior_color};font-weight:800">${a.behavior}</span>
     </div>
-    <div style="padding:10px 14px;border-right:1px solid #1e293b;white-space:nowrap">
-      <span style="color:#64748b;font-size:11px">3日概率 </span><b style="color:${a.prob_up_3d>=55?'#22c55e':a.prob_up_3d<=45?'#ef4444':'#f59e0b'};font-size:16px">${a.prob_up_3d||'—'}%</b>
-      <span style="color:${a.prob_up_3d>=55?'#22c55e':a.prob_up_3d<=45?'#ef4444':'#f59e0b'};font-size:11px;margin-left:4px">${a.prob_label||''}</span>
+    <div style="padding:10px 14px;border-right:1px solid #1e293b;white-space:nowrap" title="基于历史回测规则胜率证据的未来3日上涨概率, 50%为中性">
+      <span style="color:#64748b;font-size:11px">3日概率 </span><b style="color:${pCol};font-size:16px">${a.prob_up_3d||'—'}%</b>
+      <span style="color:${pCol};font-size:11px;margin-left:4px">${a.prob_label||''}</span>
     </div>
     <div style="padding:10px 14px;border-right:1px solid #1e293b;white-space:nowrap">
       <span style="color:#64748b;font-size:11px">动作 </span><b style="color:${actCol};font-size:16px">${act.action||'—'}</b>
@@ -995,12 +998,11 @@ function renderAnalysis(d){
     </div>
     ${act.stop_loss?`<div style="padding:10px 14px;border-right:1px solid #1e293b;white-space:nowrap"><span style="color:#64748b;font-size:11px">止损 </span><b style="color:#ef4444">¥${act.stop_loss}</b></div>`:''}
     ${act.price_suggestion?`<div style="padding:10px 14px;border-right:1px solid #1e293b;white-space:nowrap"><span style="color:#64748b;font-size:11px">${/建仓|加仓/.test(act.action||'')?'买入':'现价'}</span><b style="color:${/建仓|加仓/.test(act.action||'')?'#22c55e':'#f1f5f9'}">¥${act.price_suggestion}</b></div>`:''}
-    <div style="padding:10px 14px;color:#64748b;font-size:11px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(act.reason||'').replace(/"/g,'&quot;')}">${act.reason||a.behavior_desc||''}</div>
   </div>
 
   <!-- KPI 一行 -->
   <div style="display:grid;grid-template-columns:repeat(8,1fr);gap:6px;margin-bottom:10px">
-    ${kpis.map(k=>`<div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:6px 4px;text-align:center">
+    ${kpis.map(k=>`<div style="background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:6px 4px;text-align:center" title="${k[3]||''}">
       <div style="color:#64748b;font-size:10px">${k[0]}</div>
       <div style="color:${k[2]};font-size:14px;font-weight:700;margin-top:1px">${k[1]}</div>
     </div>`).join('')}
@@ -1046,12 +1048,12 @@ function renderAnalysis(d){
         if(!key.length)return '';
         return '<div><div style="font-size:11px;color:#f59e0b;letter-spacing:2px;margin-bottom:6px">🔥 重点信号</div>'+
           key.map((s,i)=>{
-            const c=s.type==='吸筹'?'#ef4444':s.type==='洗盘'?'#22c55e':'#f59e0b';
+            const c=s.type==='吸筹'?'#16a34a':s.type==='洗盘'?'#3b82f6':s.type==='出货'?'#f59e0b':'#94a3b8';
             const top=i===0;
-            return '<div style="display:flex;gap:10px;align-items:flex-start;background:'+(top?'#1e293b':'#0f172a')+';border:1px solid '+c+(top?'66':'2a')+';border-left:4px solid '+c+';border-radius:8px;padding:'+(top?'10px 12px':'8px 10px')+';margin-bottom:6px">'+
+            return '<div style="display:flex;gap:10px;align-items:flex-start;background:'+(top?'#1e293b':'#0f172a')+';border:1px solid '+c+(top?'66':'2a')+';border-left:4px solid '+c+';border-radius:8px;padding:'+(top?'10px 12px':'8px 10px')+';margin-bottom:6px" title="权重'+(s.weight||0)+'分">'+
               '<span style="flex-shrink:0;font-size:'+(top?'16px':'13px')+';font-weight:800;color:'+c+';min-width:44px">'+s.type+'</span>'+
               '<span style="font-size:'+(top?'13px':'12px')+';color:'+(top?'#f1f5f9':'#cbd5e1')+';line-height:1.5;'+(top?'font-weight:600':'')+'">'+s.text+'</span>'+
-              '<span style="flex-shrink:0;margin-left:auto;font-size:10px;color:#475569">'+(s.date||'').slice(5)+'</span></div>';
+              '<span style="flex-shrink:0;margin-left:auto;font-size:10px;color:#475569;white-space:nowrap">'+(s.date||'').slice(5)+'<span style="color:'+c+';font-weight:700;margin-left:4px">★'.repeat(s.weight>=30?3:s.weight>=20?2:1)+'</span></span></div>';
           }).join('')+'</div>';
       })()}
 
@@ -1066,10 +1068,10 @@ function renderAnalysis(d){
       <div style="background:#0f172a;border:1px solid #1e293b;border-radius:10px;padding:10px 12px">
         <div style="color:#64748b;font-size:11px;margin-bottom:6px">全部信号</div>
         ${(a.signals||[]).map(s=>{
-          const c=s.type==='吸筹'?'#ef4444':s.type==='洗盘'?'#22c55e':'#f59e0b';
+          const c=s.type==='吸筹'?'#16a34a':s.type==='洗盘'?'#3b82f6':s.type==='出货'?'#f59e0b':'#94a3b8';
           const w=s.weight||0;
-          const stars=w>=20?'★★★':w>=10?'★★':'★';
-          return '<div style="display:flex;gap:6px;padding:4px 0;border-bottom:1px solid #1e293b;font-size:11px;color:#cbd5e1"><span style="flex-shrink:0;color:'+c+';font-weight:700">'+s.type+'</span><span style="line-height:1.5;flex:1">'+s.text+'</span><span style="flex-shrink:0;color:'+c+';font-size:9px;letter-spacing:-1px">'+stars+'</span></div>';
+          const stars=w>=30?'★★★':w>=20?'★★':w>=10?'★':'';
+          return '<div style="display:flex;gap:6px;padding:4px 0;border-bottom:1px solid #1e293b;font-size:11px;color:#cbd5e1" title="权重'+w+'分'+(s.date?' · '+s.date:'')+'"><span style="flex-shrink:0;color:'+c+';font-weight:700">'+s.type+'</span><span style="line-height:1.5;flex:1">'+s.text+'</span><span style="flex-shrink:0;color:'+c+';font-size:9px;letter-spacing:-1px">'+stars+'</span></div>';
         }).join('')||'<div style="color:#475569;font-size:11px">暂无</div>'}
       </div>
 
@@ -1147,23 +1149,38 @@ function renderAnalysis(d){
     const todayBehaviorColor = a?.behavior_color || '#94a3b8';
     const todayBehaviorDesc = a?.behavior_desc || '';
     
-    // 通用tooltip formatter（包含行为信号）
+    // 通用tooltip formatter（包含行为信号, 结构化HTML）
     function makeTooltipFormatter(seriesName){
       return function(params){
         const p = params[0];
         const date = p.name;
         const data = p.data;
-        const signals = signalMap[date] || '无特殊信号';
+        const signals = signalMap[date] || '';
         const behavior = window._behaviorHistory?.[date] || (date===todayDate ? todayBehavior : '');
-        const behaviorText = behavior ? `行为: ${behavior}` : '';
         let priceInfo = '';
         if(seriesName === 'K线' && Array.isArray(data)){
-          priceInfo = `开:${data[0]} 收:${data[1]} 低:${data[2]} 高:${data[3]}`;
+          const o=data[0],c=data[1],l=data[2],h=data[3];
+          const chg=o>0?(c-o)/o*100:0;
+          priceInfo = `开 ${o} 收 <b style="color:${c>=o?'#ef4444':'#22c55e'}">${c}</b> 低 ${l} 高 ${h} <span style="color:${chg>=0?'#ef4444':'#22c55e'}">${chg>=0?'+':''}${chg.toFixed(2)}%</span>`;
         }else if(typeof data === 'number' && !isNaN(data)){
-          priceInfo = `${seriesName}: ${data.toFixed(2)}`;
+          priceInfo = `${seriesName}: <b>${data.toFixed(2)}</b>`;
         }
         const todayTag = date===todayDate ? '<span style="color:#f59e0b">(今日)</span>' : '';
-        return `${date}${todayTag}<br/>${priceInfo}<br/>${behaviorText}<br/>${signals}`;
+        let html = `<div style="font-size:12px;line-height:1.7">${date}${todayTag}<br/>${priceInfo}`;
+        if(behavior){
+          const bc=a?.behavior_color||'#94a3b8';
+          html += `<br/><span style="color:${bc};font-weight:700">◆ ${behavior}</span>`;
+        }
+        if(signals){
+          html += `<br/>${signals.split(' | ').map(s=>{
+            const col=s.includes('吸筹')?'#16a34a':s.includes('洗盘')?'#3b82f6':s.includes('出货')||s.includes('破位')||s.includes('止损')?'#f59e0b':s.includes('止盈')?'#ef4444':'#94a3b8';
+            return `<div style="color:${col};padding:1px 0">▸ ${s}</div>`;
+          }).join('')}`;
+        }
+        if(!behavior && !signals){
+          html += '<br/><span style="color:#475569">无特殊信号</span>';
+        }
+        return html+'</div>';
       }
     }
 
@@ -1188,7 +1205,19 @@ function renderAnalysis(d){
         ],
         series: [
           { name:'K线', type:'candlestick', xAxisIndex:0, yAxisIndex:0, data:k.map(x=>[x.open,x.close,x.low,x.high]),
-            itemStyle:{color:'#ef4444',color0:'#22c55e',borderColor:'#ef4444',borderColor0:'#22c55e'} },
+            itemStyle:{color:'#ef4444',color0:'#22c55e',borderColor:'#ef4444',borderColor0:'#22c55e'},
+            markPoint:{
+              symbol:'pin', symbolSize:14, label:{show:false},
+              data:(a.signals||[]).filter(s=>s.date&&(s.weight||0)>=20).map(s=>{
+                const bar=k.find(x=>x.date===s.date);
+                return {
+                  name:s.text,
+                  coord:[s.date, bar?bar.high:0],
+                  symbolRotate: s.type==='出货'?180:0,
+                  itemStyle:{color: s.type==='吸筹'?'#16a34a':s.type==='洗盘'?'#3b82f6':'#f59e0b'}
+                };
+              })
+            } },
           { name:'MA5', type:'line', xAxisIndex:0, yAxisIndex:0, data:d.ma5, smooth:true, lineStyle:{width:1}, itemStyle:{color:'#f59e0b'} },
           { name:'MA10', type:'line', xAxisIndex:0, yAxisIndex:0, data:d.ma10, smooth:true, lineStyle:{width:1}, itemStyle:{color:'#3b82f6'} },
           { name:'MA20', type:'line', xAxisIndex:0, yAxisIndex:0, data:d.ma20, smooth:true, lineStyle:{width:1}, itemStyle:{color:'#a855f7'} },

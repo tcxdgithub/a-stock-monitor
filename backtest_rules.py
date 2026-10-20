@@ -81,13 +81,36 @@ UNIVERSE = [
     # 自选股
     "600519", "000858", "002594", "600611", "000568", "603605", "600702",
     # 金融
-    "601318", "600036", "600030", "601166", "000001",
-    # 消费/白马
-    "000333", "601888", "600887", "000651",
-    # 新能源/科技
-    "300750", "002475", "601899", "600276", "000725", "688981",
-    # 其他
-    "601012", "600048", "002230",
+    "601318", "600036", "600030", "601166", "000001", "601398", "601288",
+    "600016", "601988", "601628",
+    # 消费白马
+    "000333", "000651", "600887", "601888", "600690", "002415",
+    # 白酒食品
+    "600809", "000596", "603369", "002304", "600600", "600132",
+    "000895", "603288", "002507", "603345",
+    # 医药
+    "600276", "300760", "603259", "600436", "000538", "600196",
+    "000661", "300015", "300122", "002821",
+    # 新能源
+    "300750", "002466", "002460", "601012", "600438", "300274",
+    "300014", "002459", "002812", "300073",
+    # 科技
+    "688981", "603501", "603986", "002371", "688012", "002049",
+    "603019", "000977", "002230", "600588", "688111", "300059",
+    "300033", "600570",
+    # 周期资源
+    "601899", "600547", "601088", "601225", "600188", "600028",
+    "601857", "600309", "600019", "600585",
+    # 制造工程
+    "600031", "000157", "000425", "000338", "601766", "600893",
+    # 地产建筑
+    "000002", "600048", "001979", "601668", "601390",
+    # 交运公用
+    "600900", "601985", "601919", "600009", "002352", "601111",
+    # 面板消费电子
+    "000725", "000100", "002475", "002241", "601138",
+    # 汽车链
+    "601689", "002050", "601633", "000625",
 ]
 
 WARMUP = 30       # 指标预热所需K线数（MACD需26根以上）
@@ -229,69 +252,69 @@ def evaluate_window(data):
             zhendang += weight
         signals.append({"id": rid, "type": rtype, "weight": weight, "text": text})
 
-    # R1 急跌后缩量企稳（回测方向为负，权重下调）
+    # R1 急跌后缩量企稳（103只样本+0.748,唯一稳定吸筹信号,权重上调）
     if change_20d < -15 and vol_ratio < 0.8 and abs(change_5d) < 3:
-        fire("R1", "吸筹", 5, "急跌后缩量企稳")
+        fire("R1", "吸筹", 25, "急跌后缩量企稳")
     # R2 暴跌后放量反弹
     if change_20d < -15 and change_5d > 5 and vol_ratio > 1.5:
-        fire("R2", "吸筹", 25, "暴跌后放量反弹")
-    # R4 放量长上影线
+        fire("R2", "吸筹", 20, "暴跌后放量反弹")
+    # R4 放量长上影线（103只-0.682,出货方向准,权重上调）
     if upper_shadow > 3 and vol_ratio > 1.5:
-        fire("R4", "出货", 25, "放量长上影线")
-    # R5 底部长下影阳线（回测+1.60，权重上调）
+        fire("R4", "出货", 30, "放量长上影线")
+    # R5 底部长下影阳线（103只-0.303方向反,25只样本的+1.60是过拟合,权重下调）
     if lower_shadow > 2 and last["close"] > last["open"] and near_low:
-        fire("R5", "吸筹", 25, "底部长下影阳线")
-    # R6 高位横盘放量（回测接近中性，权重下调）
+        fire("R5", "吸筹", 5, "底部长下影阳线")
+    # R6 高位横盘放量（103只+0.363方向反,权重下调）
     if abs(change_5d) < 2 and change_20d > 10 and vol_ratio > 1.3:
-        fire("R6", "出货", 10, "高位横盘放量")
-    # R7 连续缩量3日（回测低于基准，权重下调）
+        fire("R6", "出货", 5, "高位横盘放量")
+    # R7 连续缩量3日（中性,保持低权重）
     if all(volumes[-i] < volumes[-i - 1] for i in range(1, min(4, len(volumes)))):
         fire("R7", "吸筹", 5, "连续缩量")
-    # R8 放量突破MA5
+    # R8 放量突破MA5（103只-0.211方向反,权重下调）
     if ma5[-1] and cur > ma5[-1] and data[-2]["close"] < ma5[-2] and vol_ratio > 1.2:
-        fire("R8", "吸筹", 15, "放量突破MA5")
-    # R10 价涨量缩（回测方向反，权重下调）
+        fire("R8", "吸筹", 5, "放量突破MA5")
+    # R10 价涨量缩（103只+0.199方向反,保持低权重）
     if change_5d > 2 and vol_ratio < 0.7:
         fire("R10", "出货", 5, "价涨量缩")
-    # R11 急跌后十字星（回测+0.67，权重上调）
+    # R11 急跌后十字星（103只+0.326,保留）
     if body < 0.5 and change_20d < -10:
         fire("R11", "吸筹", 20, "急跌后十字星")
-    # R12 底部连续小阳线（回测+0.78/胜率58%，权重上调）
+    # R12 底部连续小阳线（103只+0.114弱正,权重下调）
     last3 = data[-3:]
     if all(d["close"] > d["open"] for d in last3) and all(abs(d["close"] - d["open"]) / d["open"] * 100 < 2 for d in last3) and near_low:
-        fire("R12", "吸筹", 25, "底部连续小阳线")
-    # W1 涨幅后缩量回调
+        fire("R12", "吸筹", 15, "底部连续小阳线")
+    # W1 涨幅后缩量回调（103只-1.643最大坑,权重大砍）
     if change_20d > 10 and change_5d < -3 and vol_ratio < 0.7:
-        fire("W1", "洗盘", 25, "涨幅后缩量回调")
-    # W2 回调不破MA20（回测-1.38方向反，权重下调）
+        fire("W1", "洗盘", 5, "涨幅后缩量回调")
+    # W2 回调不破MA20（103只-0.302方向反,低权重）
     if ma20[-1] and cur > ma20[-1] and change_5d < -2 and vol_ratio < 0.8:
         fire("W2", "洗盘", 5, "回调不破MA20")
-    # W3 放量下跌后快速缩量（回测低于基准，权重下调）
+    # W3 放量下跌后快速缩量（103只+0.164,权重小幅上调）
     if len(volumes) >= 3 and volumes[-3] > vol_20 * 1.3 and volumes[-1] < vol_20 * 0.7:
-        fire("W3", "洗盘", 5, "恐慌盘后缩量")
-    # W4 横盘缩量震荡（回测接近中性，权重微调）
+        fire("W3", "洗盘", 10, "恐慌盘后缩量")
+    # W4 横盘缩量震荡（103只+0.405最佳洗盘信号,权重上调）
     if abs(change_5d) < 3 and abs(change_20d) < 8 and vol_ratio < 0.75:
-        fire("W4", "洗盘", 8, "横盘缩量震荡")
-    # W5 跌破MA5守住MA20（回测+0.65，权重上调）
+        fire("W4", "洗盘", 25, "横盘缩量震荡")
+    # W5 跌破MA5守住MA20（103只+0.283,保留）
     if ma5[-1] and ma20[-1] and cur < ma5[-1] and cur > ma20[-1] and change_5d < -2:
         fire("W5", "洗盘", 20, "跌破MA5守MA20")
-    # C1 高位放量大阴线
+    # C1 高位放量大阴线（103只-1.533,保留最高权重）
     if day_change_pct < -3 and vol_ratio_5 > 1.5:
         fire("C1", "出货", 35, "放量大阴线")
-    # C2 冲高回落
+    # C2 冲高回落（103只-0.309,权重上调）
     if high_to_close > 3 and vol_ratio_5 > 1.2:
-        fire("C2", "出货", 25, "冲高回落")
-    # C3 放量跌破MA5+MA20
+        fire("C2", "出货", 30, "冲高回落")
+    # C3 放量跌破MA5+MA20（103只-0.158,权重略降）
     if ma5[-1] and ma20[-1] and cur < ma5[-1] and cur < ma20[-1] and data[-2]["close"] > ma5[-2] and vol_ratio_5 > 1.3:
-        fire("C3", "出货", 30, "断头铡刀")
-    # C4 连续2日放量下跌
+        fire("C3", "出货", 25, "断头铡刀")
+    # C4 连续2日放量下跌（103只-1.083,权重上调）
     if len(data) >= 3:
         prev = data[-2]
         prev_chg = (prev["close"] - prev["open"]) / prev["open"] * 100
         prev_vr = volumes[-2] / vol_5 if vol_5 > 0 else 1
         if day_change_pct < -1 and prev_chg < -1 and vol_ratio_5 > 1.2 and prev_vr > 1.2:
-            fire("C4", "出货", 30, "连续放量下跌")
-    # C5 高位长上影缩量（回测方向反，权重下调）
+            fire("C4", "出货", 35, "连续放量下跌")
+    # C5 高位长上影缩量（中性,低权重）
     if upper_shadow > 2 and vol_ratio_5 < 0.8 and change_20d > 10:
         fire("C5", "出货", 5, "高位长上影缩量")
     # C6 跌破前低
@@ -330,6 +353,7 @@ def run_backtest():
     skipped = []
     total_windows = 0
     stock_results = []
+    window_recs = []   # 校准用: 每窗口 {sigs, fwd3}
 
     for code in UNIVERSE:
         symbol = ("sh" if code.startswith(("6", "9")) else "sz") + code
@@ -349,6 +373,10 @@ def run_backtest():
                 fwd[d] = (data[T + d]["close"] - base) / base * 100
             total_windows += 1
             all_ret3.append(fwd[3])
+            window_recs.append({
+                "sigs": [(s["id"], s["weight"]) for s in signals],
+                "fwd3": fwd[3],
+            })
 
             for s in signals:
                 rs = rule_stats.setdefault(s["id"], {"n": 0, "r1": 0.0, "r3": 0.0, "r5": 0.0, "w3": 0})
@@ -371,6 +399,43 @@ def run_backtest():
         print(f"[OK] {code} {name} bars={len(data)}", flush=True)
 
     baseline3 = sum(all_ret3) / len(all_ret3) if all_ret3 else 0
+
+    # ---- 概率校准: 与 app.py _calc_prob_up_3d 同逻辑(规则胜率证据, 不含大盘修正) ----
+    win3_map = {rid: rs["w3"] / rs["n"] * 100 for rid, rs in rule_stats.items()}
+    BUCKETS = [(0, 35), (35, 40), (40, 45), (45, 50), (50, 55), (55, 60), (60, 65), (65, 101)]
+    calib = {b: {"n": 0, "wins": 0, "ret3": 0.0} for b in BUCKETS}
+    no_sig = {"n": 0, "wins": 0, "ret3": 0.0}
+    for rec in window_recs:
+        if not rec["sigs"]:
+            no_sig["n"] += 1
+            no_sig["wins"] += 1 if rec["fwd3"] > 0 else 0
+            no_sig["ret3"] += rec["fwd3"]
+            continue
+        prob = 50.0
+        for rid, weight in rec["sigs"]:
+            w3 = win3_map.get(rid, 44.0)
+            prob += (w3 - 50.0) * (weight / 35.0)
+        prob = max(0.0, min(100.0, prob))
+        for b in BUCKETS:
+            if b[0] <= prob < b[1]:
+                calib[b]["n"] += 1
+                calib[b]["wins"] += 1 if rec["fwd3"] > 0 else 0
+                calib[b]["ret3"] += rec["fwd3"]
+                break
+    calib_rows = []
+    for b in BUCKETS:
+        c = calib[b]
+        if c["n"] > 0:
+            calib_rows.append({
+                "bucket": f"{b[0]}-{b[1] if b[1] <= 100 else 100}%",
+                "n": c["n"], "win3": c["wins"] / c["n"] * 100,
+                "ret3": c["ret3"] / c["n"],
+            })
+    calib_rows.append({
+        "bucket": "无信号(参照)", "n": no_sig["n"],
+        "win3": no_sig["wins"] / no_sig["n"] * 100 if no_sig["n"] else 0,
+        "ret3": no_sig["ret3"] / no_sig["n"] if no_sig["n"] else 0,
+    })
 
     # ---- 规则统计 ----
     rule_rows = []
@@ -400,6 +465,7 @@ def run_backtest():
         "baseline_ret3": round(baseline3, 3),
         "rules": rule_rows,
         "behaviors": behav_rows,
+        "calibration": calib_rows,
         "per_stock": stock_results,
     }
     with open("backtest_rules_result.json", "w", encoding="utf-8") as f:
@@ -428,6 +494,11 @@ def print_report(r):
     for rw in r["rules"]:
         judge = "可用" if (rw["edge3"] > 0.3 if "吸筹" in str(rw.get("type", "")) else rw["edge3"] < -0.3) else "待观察"
         print(f"{rw['id']:<5}{'':<5}{rw['n']:>6}{rw['ret1']:>9.3f}{rw['ret3']:>9.3f}{rw['ret5']:>9.3f}{rw['win3']:>10.1f}{rw['edge3']:>9.3f}")
+
+    print("\n【概率校准】  概率高→实际3日上涨率应越高(单调)。in-sample胜率,轻微乐观偏差")
+    print(f"{'概率区间':<12}{'次数':>8}{'实际3日胜率%':>12}{'实际3日收益%':>12}")
+    for c in r.get("calibration", []):
+        print(f"{c['bucket']:<12}{c['n']:>8}{c['win3']:>12.1f}{c['ret3']:>12.3f}")
 
 
 if __name__ == "__main__":
