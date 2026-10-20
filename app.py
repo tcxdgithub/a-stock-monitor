@@ -20,7 +20,9 @@ def _curl(url, headers=None, enc="utf-8"):
     else:
         cmd += ["-H", f"User-Agent: {UA}"]
     try:
-        r = subprocess.run(cmd, capture_output=True, timeout=15)
+        # Windows 下 pythonw 父进程 spawn 控制台程序会自动弹黑窗, 用 CREATE_NO_WINDOW 压掉
+        flags = subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0
+        r = subprocess.run(cmd, capture_output=True, timeout=15, creationflags=flags)
         return r.stdout.decode(enc, errors="replace").strip()
     except Exception:
         return ""
@@ -59,32 +61,35 @@ def _sina(fenlei, num=30):
 
 
 def _stocks():
-    codes = ["sh600519","sh601318","sz000858","sh600036","sz002594",
-             "sz300750","sz002475","sh600900","sz000001","sh601899",
-             "sz002371","sz000651","sz300059","sz002049","sh601166",
-             "sz000568","sz300760","sh600887","sh603288","sz002714",
-             "sh601398","sh600276","sz300274","sh688981","sz002230",
-             "sh600031","sz300015","sz000725","sh600585","sz000002"]
-    raw = _curl(f"https://qt.gtimg.cn/q={','.join(codes)}",
-                ["-H", f"User-Agent: {UA}", "-H", "Referer: https://finance.qq.com/"], enc="gbk")
+    """从新浪获取A股热门排行（按成交额降序，真正的市场热点）"""
+    raw = _curl("https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+                "Market_Center.getHQNodeData?page=1&num=30&sort=amount&asc=0&node=hs_a",
+                ["-H", f"User-Agent: {UA}", "-H", "Referer: https://finance.sina.com.cn/"])
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return []
     out = []
-    for line in raw.split(";"):
-        line = line.strip()
-        if "=" not in line:
-            continue
+    for x in data:
         try:
-            p = line.split("=", 1)[1].strip('"').split("~")
-            if len(p) < 46:
+            code = x.get("code", "")
+            symbol = x.get("symbol", "")
+            name = x.get("name", "")
+            if not code or symbol.startswith("bj") or "ST" in name.upper():
                 continue
             out.append({
-                "code": p[2], "name": p[1],
-                "latest": float(p[3] or 0), "pct_change": float(p[32] or 0),
-                "amount": float(p[37] or 0), "turnover": float(p[38] or 0),
+                "code": code,
+                "name": name,
+                "latest": float(x.get("trade", 0) or 0),
+                "pct_change": float(x.get("changepercent", 0) or 0),
+                "amount": float(x.get("amount", 0) or 0) / 1e4,
+                "turnover": float(x.get("turnoverratio", 0) or 0),
             })
         except Exception:
             continue
-    out.sort(key=lambda x: x["amount"], reverse=True)
-    return out
+    return out[:30]
 
 
 def _refresh():
@@ -365,14 +370,94 @@ def _code_to_symbol(code):
     return "sh" + code
 
 
+_KL_CACHE = {}  # symbol -> (ts, name, klines, days)
+_KL_TTL = 300
+
+
 def _get_kline(symbol, days=60):
-    url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={symbol},day,,,{days},qfq"
-    data = _j(url, ["-H", f"User-Agent: {UA}", "-H", "Referer: https://web.ifzq.gtimg.cn/"])
-    info = data.get("data", {}).get(symbol, {})
-    qt = info.get("qt", {}).get(symbol, [])
-    klines = info.get("qfqday", []) or info.get("day", [])
-    name = qt[1] if len(qt) > 1 else ""
-    return name, klines
+    c = _KL_CACHE.get(symbol)
+    if c and time.time() - c[0] < _KL_TTL and c[3] >= days:
+        return c[1], c[2]
+    # 腾讯双域名(主域常被WAF限流,备用优先;各重试)
+    for attempt in range(2):
+        for host in ("proxy.finance.qq.com", "web.ifzq.gtimg.cn"):
+            url = f"https://{host}/appstock/app/fqkline/get?param={symbol},day,,,{days},qfq"
+            data = _j(url, ["-H", f"User-Agent: {UA}", "-H", "Referer: https://web.ifzq.gtimg.cn/"])
+            info = data.get("data", {}).get(symbol, {})
+            qt = info.get("qt", {}).get(symbol, [])
+            klines = info.get("qfqday", []) or info.get("day", [])
+            if klines:
+                name = qt[1] if len(qt) > 1 else ""
+                _KL_CACHE[symbol] = (time.time(), name, klines, days)
+                return name, klines
+        time.sleep(0.5)
+    # 搜狐备用(原始价, [date,open,close,chg,pct,low,high,vol,amount,...])
+    try:
+        sohu_code = "cn_" + symbol[2:]
+        start = (datetime.date.today() - datetime.timedelta(days=int(days * 1.6) + 25)).strftime("%Y%m%d")
+        end = datetime.date.today().strftime("%Y%m%d")
+        raw = _curl(f"https://q.stock.sohu.com/hisHq?code={sohu_code}&start={start}&end={end}",
+                    ["-H", f"User-Agent: {UA}"])
+        arr = json.loads(raw)
+        hq = arr[0].get("hq", []) if isinstance(arr, list) and arr else []
+        klines = []
+        for r in hq:
+            try:
+                # sohu: date,open,close,chg,pct,low,high,vol(手),amount(万),...
+                klines.append([r[0], str(r[1]), str(r[2]), str(r[6]), str(r[5]), str(r[7])])
+            except Exception:
+                continue
+        if len(klines) >= 15:
+            klines.reverse()  # sohu最新在前→转升序(与腾讯一致,最后=最新)
+            res = klines[-days:]
+            _KL_CACHE[symbol] = (time.time(), "", res, days)
+            return "", res
+    except Exception:
+        pass
+    return "", []
+
+
+_MF_CACHE = {}  # symbol -> (ts, money_flow_list)
+_MF_TTL = 300
+
+
+def _get_money_flow(symbol, days=5):
+    """新浪个股主力资金流向(近N日): net=主力净流入额(元), ratio=净占比(%), r0=超大单净额"""
+    c = _MF_CACHE.get(symbol)
+    if c and time.time() - c[0] < _MF_TTL:
+        return c[1]
+    url = (f"https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+           f"MoneyFlow.ssl_qsfx_zjlrqs?page=1&num={days}&sort=opendate&asc=0&daima={symbol}")
+    data = _j(url, ["-H", f"User-Agent: {UA}", "-H", "Referer: https://finance.sina.com.cn/"])
+    out = []
+    if isinstance(data, list):
+        for x in data:
+            try:
+                out.append({
+                    "date": x.get("opendate", ""),
+                    "net": float(x.get("netamount", 0) or 0),
+                    "ratio": float(x.get("ratioamount", 0) or 0) * 100,
+                    "r0_net": float(x.get("r0_net", 0) or 0),
+                    "chg": float(x.get("changeratio", 0) or 0) * 100,
+                })
+            except Exception:
+                continue
+    _MF_CACHE[symbol] = (time.time(), out)
+    return out
+
+
+def _get_market_context():
+    """大盘(上证指数)趋势闸门: bear=20日跌超5%视为弱势"""
+    try:
+        name, kl = _get_kline("sh000001", days=30)
+        if not kl or len(kl) < 20:
+            return {"idx": "", "chg5": 0.0, "chg20": 0.0, "bear": False}
+        closes = [float(k[2]) for k in kl]
+        chg5 = (closes[-1] - closes[-5]) / closes[-5] * 100
+        chg20 = (closes[-1] - closes[-20]) / closes[-20] * 100
+        return {"idx": name, "chg5": round(chg5, 2), "chg20": round(chg20, 2), "bear": chg20 < -5}
+    except Exception:
+        return {"idx": "", "chg5": 0.0, "chg20": 0.0, "bear": False}
 
 
 def _calc_ma(closes, period):
@@ -466,6 +551,377 @@ def _calc_kdj(highs, lows, closes, period=9):
     return k_values, d_values, j_values
 
 
+def _calc_position_advice(score_xichou, score_xipan, score_chuhuo, cur, ma5, ma20, change_5d, change_20d, vol_ratio):
+    """根据技术信号计算仓位管理建议"""
+    advice = {
+        "action": "持有",
+        "position_pct": 0,
+        "stop_loss": 0,
+        "reason": "",
+    }
+
+    # 止损位：MA20下方3%
+    if ma20[-1]:
+        advice["stop_loss"] = round(ma20[-1] * 0.97, 2)
+
+    # 强出货信号 → 大幅减仓
+    if score_chuhuo >= 30 and score_chuhuo > score_xichou:
+        if change_20d > 15:
+            advice["action"] = "止盈减仓"
+            advice["position_pct"] = 50
+            advice["reason"] = "高位出货信号强,建议减仓50%锁定利润"
+        elif cur < (ma20[-1] if ma20[-1] else cur):
+            advice["action"] = "止损"
+            advice["position_pct"] = 80
+            advice["reason"] = "跌破支撑位,建议止损80%"
+        else:
+            advice["action"] = "减仓"
+            advice["position_pct"] = 30
+            advice["reason"] = "出货信号较强,建议减仓30%"
+    # 中等出货信号 → 小幅减仓
+    elif score_chuhuo >= 15 and score_chuhuo > score_xichou:
+        advice["action"] = "减仓"
+        advice["position_pct"] = 20
+        advice["reason"] = "存在出货迹象,建议小幅减仓"
+    # 吸筹信号 → 可加仓
+    elif score_xichou >= 20 and score_xichou > score_chuhuo:
+        if change_20d < -10:
+            advice["action"] = "加仓"
+            advice["position_pct"] = 20
+            advice["reason"] = "超跌吸筹信号,可分批加仓"
+        else:
+            advice["action"] = "持有"
+            advice["position_pct"] = 0
+            advice["reason"] = "吸筹信号,继续持有"
+    # 洗盘 → 持有不动
+    elif score_xipan >= 20 and score_xipan > score_xichou:
+        advice["action"] = "持有"
+        advice["position_pct"] = 0
+        advice["reason"] = "洗盘阶段,主力未走,持有不动"
+
+    return advice
+
+
+def _check_capital_filter(symbol, behavior):
+    """资金面硬过滤：真实新浪个股主力资金流
+    through=False 时仓位上限减半；吸筹/洗盘类必须资金配合"""
+    try:
+        mf = _get_money_flow(symbol, days=5)
+        if not mf:
+            return {"through": True, "score": 50, "reason": "资金数据获取失败,保守放行"}
+        today = mf[0]
+        net_5d = sum(x["net"] for x in mf)
+        ratio_5d = sum(x["ratio"] for x in mf) / len(mf)
+        net_today = today["net"]
+        ratio_today = today["ratio"]
+        # 净占比映射到0-100分: 占比+5%→75分, 0→50分, -5%→25分
+        score = max(0, min(100, round(50 + ratio_5d * 5)))
+        direction = "净流入" if net_5d >= 0 else "净流出"
+        reason = f"主力近5日{direction} {net_5d/1e8:.2f}亿,今日净占比{ratio_today:+.2f}%"
+        if behavior in ("吸筹", "洗盘"):
+            # 买类信号必须资金配合：5日净流入，或今日无明显流出
+            if net_5d > 0 or (net_5d > -2e7 and ratio_today > -0.5):
+                return {"through": True, "score": score, "reason": reason}
+            return {"through": False, "score": score, "reason": reason + ",资金未配合,信号降级"}
+        elif behavior in ("止盈", "止损", "减仓"):
+            # 卖出信号无需资金确认
+            return {"through": True, "score": score, "reason": reason + "(卖出信号无需资金确认)"}
+        elif behavior in ("观望", "震荡"):
+            return {"through": score >= 50, "score": score, "reason": reason}
+        else:
+            return {"through": True, "score": score, "reason": reason}
+    except Exception:
+        return {"through": True, "score": 50, "reason": "资金面数据异常,默认放行"}
+
+
+def _build_enhanced_advice(
+    behavior, behavior_desc, behavior_color,
+    cur, ma5, ma10, ma20, change_5d, change_20d,
+    vol_ratio, vol_ratio_5, vol_level, vol_percentile,
+    kdj_oversold, kdj_overbought,
+    macd_gold_cross, macd_dead_cross,
+    ma_bullish, above_ma5, above_ma20,
+    price_change_5d, price_change_20d,
+    drawdown,
+    capital_filter,
+    vol_trend_direction, vp_harmony,
+    signals, vp_signals,
+    day_change_pct, high_to_close,
+    market=None,
+):
+    """构建增强版仓位建议：诊断报告 + 分级仓位 + 资金过滤 + 关键价位"""
+    
+    # === 关键支撑/压力位 ===
+    support_ma5 = round(ma5[-1], 2) if ma5[-1] else None
+    support_ma10 = round(ma10[-1], 2) if ma10[-1] else None
+    support_ma20 = round(ma20[-1], 2) if ma20[-1] else None
+    resistance_ma5 = support_ma5
+    resistance_ma10 = support_ma10
+    
+    # === 基础止损位 ===
+    stop_loss_ma20 = round(ma20[-1] * 0.97, 2) if ma20[-1] else None
+    stop_loss_ma10 = round(ma10[-1] * 0.95, 2) if ma10[-1] else None
+    stop_loss_ma5 = round(ma5[-1] * 0.98, 2) if ma5[-1] else None
+    # 止损必须低于现价(买入价)3%以内，否则买入即触发止损，无意义
+    # 场景：股价在MA20下方时 MA20*0.97 会高于现价
+    stop_cap = round(cur * 0.97, 2)
+    stop_loss_ma20 = min(stop_loss_ma20, stop_cap) if stop_loss_ma20 else stop_cap
+    stop_loss_ma10 = min(stop_loss_ma10, stop_cap) if stop_loss_ma10 else stop_cap
+    stop_loss_ma5 = min(stop_loss_ma5, stop_cap) if stop_loss_ma5 else stop_cap
+    
+    # === 行为对应的分级仓位方案 ===
+    tiered_plan = {
+        "吸筹": {
+            "tier1": {"name": "试探性建仓", "pct": 10, "trigger": "缩量止跌+支撑位不破+KDJ<20金叉", "stop": stop_loss_ma20},
+            "tier2": {"name": "确认性加仓", "pct": 25, "trigger": "放量突破MA5+MACD金叉", "stop": stop_loss_ma10},
+            "tier3": {"name": "趋势跟随", "pct": 35, "trigger": "MA5/10/20多头排列+回调不破MA5", "stop": stop_loss_ma5},
+            "tier4": {"name": "加速持有", "pct": 20, "trigger": "主升浪放量创新高", "stop": stop_loss_ma5},
+            "max_total": 90,
+            "cash_reserve": 10,
+        },
+        "洗盘": {
+            "tier1": {"name": "末期试探", "pct": 10, "trigger": "地量+守住MA20+KDJ金叉", "stop": stop_loss_ma20},
+            "tier2": {"name": "反弹确认", "pct": 20, "trigger": "放量突破MA5+收复MA10", "stop": stop_loss_ma10},
+            "tier3": {"name": "趋势跟随", "pct": 30, "trigger": "站上MA10+缩量回调不破MA5", "stop": stop_loss_ma5},
+            "tier4": {"name": "加速持有", "pct": 25, "trigger": "多头排列+板块联动", "stop": stop_loss_ma5},
+            "max_total": 85,
+            "cash_reserve": 15,
+        },
+        "震荡": {
+            "tier1": {"name": "底部试探", "pct": 8, "trigger": "距近低<5%+缩量+KDJ超卖金叉", "stop": stop_loss_ma20},
+            "tier2": {"name": "突破确认", "pct": 20, "trigger": "放量突破震荡上沿+MA5金叉", "stop": stop_loss_ma10},
+            "tier3": {"name": "趋势跟随", "pct": 25, "trigger": "站上MA20+多头排列", "stop": stop_loss_ma5},
+            "tier4": {"name": "加速持有", "pct": 15, "trigger": "突破前高+放量", "stop": stop_loss_ma5},
+            "max_total": 70,
+            "cash_reserve": 30,
+        },
+        "观望": {
+            "tier1": {"name": "等待信号", "pct": 0, "trigger": "等待吸筹/洗盘确认", "stop": None},
+            "max_total": 0,
+            "cash_reserve": 100,
+        },
+        "减仓": {
+            "tier1": {"name": "预警减仓", "pct": -20, "trigger": "冲高回落/量价背离/触及压力位", "stop": None},
+            "tier2": {"name": "确认止盈", "pct": -30, "trigger": "放量跌破MA5/连续放量下跌", "stop": None},
+            "tier3": {"name": "保底清仓", "pct": -50, "trigger": "破MA20不收回/破前低", "stop": None},
+            "max_total": -100,
+            "cash_reserve": 100,
+        },
+        "止盈": {
+            "tier1": {"name": "止盈减仓", "pct": -40, "trigger": "高位放量大阴线/冲高回落", "stop": None},
+            "tier2": {"name": "趋势止盈", "pct": -30, "trigger": "跌破MA5/量价背离", "stop": None},
+            "tier3": {"name": "保底清仓", "pct": -30, "trigger": "破MA10/破前低", "stop": None},
+            "max_total": -100,
+            "cash_reserve": 100,
+        },
+        "止损": {
+            "tier1": {"name": "紧急止损", "pct": -80, "trigger": "跌破关键支撑/破位下行", "stop": None},
+            "tier2": {"name": "剩余清仓", "pct": -20, "trigger": "反抽不破MA5", "stop": None},
+            "max_total": -100,
+            "cash_reserve": 100,
+        },
+    }
+    
+    plan = tiered_plan.get(behavior, tiered_plan["震荡"])
+    
+    # === 资金面过滤调整 ===
+    capital_ok = capital_filter.get("through", True)
+    capital_score = capital_filter.get("score", 50)
+    capital_reason = capital_filter.get("reason", "")
+    
+    if not capital_ok:
+        # 资金面不通过：大幅降低仓位上限
+        plan["max_total"] = max(0, plan["max_total"] // 2)
+        plan["cash_reserve"] = 100 - plan["max_total"]
+        for k in ["tier1", "tier2", "tier3", "tier4"]:
+            if k in plan and isinstance(plan[k], dict) and "pct" in plan[k]:
+                plan[k]["pct"] = max(0, plan[k]["pct"] // 2)
+    
+    # === 大盘闸门：弱势大盘降级买类信号 ===
+    market_note = ""
+    if market and market.get("bear") and behavior in ("吸筹", "洗盘"):
+        market_note = f"大盘20日{market['chg20']:.1f}%弱势,买类信号降级"
+        plan["max_total"] = 0
+        plan["cash_reserve"] = 100
+        for k in ["tier1", "tier2", "tier3", "tier4"]:
+            if k in plan and isinstance(plan[k], dict) and "pct" in plan[k]:
+                plan[k]["pct"] = 0
+    
+    # === 生成今日诊断报告 ===
+    today_action = ""
+    today_reason = ""
+    today_urgency = "低"
+    today_risk = "中"
+    suggested_pct = 0
+    key_prices = {}
+    
+    if behavior in ("吸筹", "洗盘"):
+        today_action = "试探性建仓" if plan["tier1"]["pct"] > 0 else "观望"
+        today_reason = plan["tier1"]["trigger"]
+        today_urgency = "中" if plan["tier1"]["pct"] > 0 else "低"
+        today_risk = "中"
+        suggested_pct = plan["tier1"]["pct"]
+        key_prices = {
+            "买入区间": f"{round(cur*0.99,2)}-{round(cur*1.01,2)}",
+            "止损": plan["tier1"]["stop"],
+            "支撑位": {"MA5": support_ma5, "MA10": support_ma10, "MA20": support_ma20},
+        }
+    elif behavior in ("止盈", "减仓"):
+        today_action = "预警减仓"
+        today_reason = plan["tier1"]["trigger"]
+        today_urgency = "高"
+        today_risk = "高"
+        suggested_pct = plan["tier1"]["pct"]
+        key_prices = {
+            "减仓区间": f"{round(cur*0.99,2)}-{round(cur*1.01,2)}",
+            "止盈目标": resistance_ma5,
+            "压力位": {"MA5": resistance_ma5, "MA10": resistance_ma10},
+        }
+    elif behavior == "止损":
+        today_action = "紧急止损"
+        today_reason = plan["tier1"]["trigger"]
+        today_urgency = "高"
+        today_risk = "极高"
+        suggested_pct = plan["tier1"]["pct"]
+        key_prices = {
+            "止损价": plan["tier1"]["stop"],
+            "支撑位": {"MA20": support_ma20},
+        }
+    elif behavior == "减仓":
+        today_action = "分批止盈"
+        today_reason = plan["tier1"]["trigger"]
+        today_urgency = "中"
+        today_risk = "中"
+        suggested_pct = plan["tier1"]["pct"]
+        key_prices = {
+            "减仓区间": f"{round(cur*0.99,2)}-{round(cur*1.01,2)}",
+            "压力位": {"MA5": resistance_ma5, "MA10": resistance_ma10},
+        }
+    else:
+        today_action = "观望"
+        today_reason = "震荡/观望，等待明确信号"
+        today_urgency = "低"
+        today_risk = "中"
+        suggested_pct = 0
+        key_prices = {}
+    
+    # === 组装返回 ===
+    return {
+        # 今日决策
+        "action": today_action,
+        "reason": today_reason,
+        "urgency": today_urgency,
+        "risk_level": today_risk,
+        "position_pct": suggested_pct,
+        
+        # 分级仓位表
+        "tiered_plan": plan,
+        
+        # 关键价位
+        "key_prices": key_prices,
+        
+        # 资金面过滤
+        "capital_filter": {
+            "through": capital_ok,
+            "score": capital_score,
+            "reason": capital_reason,
+        },
+        
+        # 确认信号
+        "confirm_signals": [s["text"] for s in signals if s.get("weight", 0) >= 20],
+        
+        # 风控提醒
+        "risk_notes": [
+            f"单票上限: {plan['max_total']}%",
+            f"现金底仓: {plan['cash_reserve']}%",
+            f"资金面: {'通过' if capital_ok else '不通过'} ({capital_score}分)",
+            f"大盘: {market_note or ('正常' if market and not market.get('bear') else '未知')}",
+            f"止损纪律: 破位不补仓，止损不移动",
+        ],
+        
+        # 兼容旧字段
+        "stop_loss": stop_loss_ma20,
+        "price_suggestion": round(cur, 2),
+        "behavior": behavior,
+        "behavior_desc": behavior_desc,
+        "behavior_color": behavior_color,
+    }
+
+
+# === 回测证据：规则命中率(来自 backtest_rules_result.json) ===
+_rule_stats = None
+_RULE_TEXT_TO_ID = {
+    "急跌后缩量企稳,主力可能逢低吸筹": "R1",
+    "暴跌后放量反弹,资金试探性介入": "R2",
+    "放量长上影线,拉高后遭遇抛压,注意出货": "R4",
+    "底部长下影阳线,止跌信号明确": "R5",
+    "高位横盘放量,主力可能派发筹码": "R6",
+    "连续缩量,抛压逐渐衰竭": "R7",
+    "放量突破MA5,短期趋势转强": "R8",
+    "价涨量缩,上涨乏力,注意回调风险": "R10",
+    "急跌后十字星,变盘信号,关注方向选择": "R11",
+    "底部连续小阳线,主力缓慢建仓迹象": "R12",
+    "涨幅后缩量回调,主力可能洗盘,清洗浮筹": "W1",
+    "回调不破MA20,强势洗盘,主力护盘明显": "W2",
+    "放量下跌后快速缩量,恐慌盘涌出,洗盘可能接近尾声": "W3",
+    "横盘缩量震荡,主力可能在洗盘等待时机": "W4",
+    "跌破MA5守住MA20,假跌破洗盘可能性大": "W5",
+    "放量跌破MA5和MA20,断头铡刀形态,趋势转弱": "C3",
+    "高位长上影缩量,拉高试盘失败,主力放弃护盘": "C5",
+    "跌破近5日低点,破位下行,止损信号": "C6",
+}
+
+
+def _rule_text_to_id(text):
+    if text.startswith("放量大阴线(跌"):
+        return "C1"
+    if text.startswith("冲高回落(高点回落"):
+        return "C2"
+    if text.startswith("连续两日放量下跌"):
+        return "C4"
+    return _RULE_TEXT_TO_ID.get(text, "")
+
+
+def _load_rule_stats():
+    global _rule_stats
+    if _rule_stats is not None:
+        return _rule_stats
+    _rule_stats = {}
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backtest_rules_result.json")
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for r in data.get("rules", []):
+                _rule_stats[r.get("id", "")] = r.get("win3", 44.0)
+    except Exception:
+        pass
+    return _rule_stats
+
+
+def _calc_prob_up_3d(signals, market):
+    """基于回测胜率证据的3日上涨概率估计(0-100)。
+    原理：每条触发规则按其历史3日胜率偏离50%的幅度×权重贡献调整基准概率50%，
+    再按大盘强弱修正。胜率数据来自 backtest_rules_result.json（backtest_rules.py 产出）。"""
+    stats = _load_rule_stats()
+    prob = 50.0
+    for s in signals:
+        rid = _rule_text_to_id(s.get("text", ""))
+        win3 = stats.get(rid, 44.0)  # 缺省用全样本基线胜率
+        # win3 即该规则触发后3日上涨胜率: 吸筹类>50、出货类<50,直接以偏离度×权重贡献
+        prob += (win3 - 50.0) * (s.get("weight", 0) / 35.0)
+    if market:
+        if market.get("bear"):
+            prob -= 8
+        if market.get("chg20", 0) < -5:
+            prob -= 5
+        if market.get("chg5", 0) > 3:
+            prob += 4
+        elif market.get("chg5", 0) < -3:
+            prob -= 4
+    return round(max(0.0, min(100.0, prob)), 1)
+
+
 def _analyze_stock(symbol, days=60):
     name, klines = _get_kline(symbol, days)
     if not klines or len(klines) < 15:
@@ -518,8 +974,12 @@ def _analyze_stock(symbol, days=60):
 
     # 量能
     vol_5 = sum(volumes[-5:]) / 5
+    vol_10 = sum(volumes[-10:]) / 10 if len(volumes) >= 10 else vol_5
     vol_20 = sum(volumes[-20:]) / min(20, len(volumes[-20:]))
     vol_ratio = vol_5 / vol_20 if vol_20 > 0 else 1
+    # 当日量比：相对5日/10日均量（更敏感）
+    vol_ratio_5 = volumes[-1] / vol_5 if vol_5 > 0 else 1
+    vol_ratio_10 = volumes[-1] / vol_10 if vol_10 > 0 else 1
     
     # === 量能分级（百分位法） ===
     vol_sorted = sorted(volumes[-20:]) if len(volumes) >= 20 else sorted(volumes)
@@ -698,8 +1158,8 @@ def _analyze_stock(symbol, days=60):
 
     # 规则1: 急跌后缩量企稳 → 底部吸筹
     if change_20d < -15 and vol_ratio < 0.8 and abs(change_5d) < 3:
-        score_xichou += 30
-        signals.append({"text": "急跌后缩量企稳,主力可能逢低吸筹", "weight": 30, "type": "吸筹"})
+        score_xichou += 5
+        signals.append({"text": "急跌后缩量企稳,主力可能逢低吸筹", "weight": 5, "type": "吸筹"})
 
     # 规则2: 暴跌后放量反弹 → 超跌反弹/试探性建仓
     if change_20d < -15 and change_5d > 5 and vol_ratio > 1.5:
@@ -716,18 +1176,18 @@ def _analyze_stock(symbol, days=60):
     # 规则5: 底部长下影阳线 → 止跌信号
     lower_shadow = (min(last["open"], last["close"]) - last["low"]) / last["open"] * 100
     if lower_shadow > 2 and last["close"] > last["open"] and near_low:
-        score_xichou += 20
-        signals.append({"text": "底部长下影阳线,止跌信号明确", "weight": 20, "type": "吸筹"})
+        score_xichou += 25
+        signals.append({"text": "底部长下影阳线,止跌信号明确", "weight": 25, "type": "吸筹"})
 
     # 规则6: 高位横盘放量 → 派发
     if abs(change_5d) < 2 and change_20d > 10 and vol_ratio > 1.3:
-        score_chuhuo += 25
-        signals.append({"text": "高位横盘放量,主力可能派发筹码", "weight": 25, "type": "出货"})
+        score_chuhuo += 10
+        signals.append({"text": "高位横盘放量,主力可能派发筹码", "weight": 10, "type": "出货"})
 
     # 规则7: 连续缩量3日以上 → 抛压衰竭
     if all(volumes[-i] < volumes[-i - 1] for i in range(1, min(4, len(volumes)))):
-        score_xichou += 15
-        signals.append({"text": "连续缩量,抛压逐渐衰竭", "weight": 15, "type": "吸筹"})
+        score_xichou += 5
+        signals.append({"text": "连续缩量,抛压逐渐衰竭", "weight": 5, "type": "吸筹"})
 
     # 规则8: 放量突破MA5 → 短期转强
     if ma5[-1] and cur > ma5[-1] and data[-2]["close"] < ma5[-2] and vol_ratio > 1.2:
@@ -736,21 +1196,21 @@ def _analyze_stock(symbol, days=60):
 
     # 规则10: 量价背离(价涨量缩) → 上涨乏力
     if change_5d > 2 and vol_ratio < 0.7:
-        score_chuhuo += 15
-        signals.append({"text": "价涨量缩,上涨乏力,注意回调风险", "weight": 15, "type": "出货"})
+        score_chuhuo += 5
+        signals.append({"text": "价涨量缩,上涨乏力,注意回调风险", "weight": 5, "type": "出货"})
 
     # 规则11: 急跌后十字星 → 变盘信号
     body = abs(last["close"] - last["open"]) / last["open"] * 100
     if body < 0.5 and change_20d < -10:
-        score_xichou += 15
-        signals.append({"text": "急跌后十字星,变盘信号,关注方向选择", "weight": 15, "type": "吸筹"})
+        score_xichou += 20
+        signals.append({"text": "急跌后十字星,变盘信号,关注方向选择", "weight": 20, "type": "吸筹"})
 
     # 规则12: 底部连续小阳线 → 主力缓慢建仓
     last3 = data[-3:]
     if all(d["close"] > d["open"] for d in last3) and all(abs(d["close"] - d["open"]) / d["open"] * 100 < 2 for d in last3):
         if near_low:
-            score_xichou += 20
-            signals.append({"text": "底部连续小阳线,主力缓慢建仓迹象", "weight": 20, "type": "吸筹"})
+            score_xichou += 25
+            signals.append({"text": "底部连续小阳线,主力缓慢建仓迹象", "weight": 25, "type": "吸筹"})
 
     # === 洗盘规则 ===
     # 规则W1: 涨幅后缩量回调 → 洗盘（主力不卖，散户恐慌）
@@ -760,45 +1220,99 @@ def _analyze_stock(symbol, days=60):
 
     # 规则W2: 回调不破MA20 → 强势洗盘
     if ma20[-1] and cur > ma20[-1] and change_5d < -2 and vol_ratio < 0.8:
-        score_xipan += 20
-        signals.append({"text": "回调不破MA20,强势洗盘,主力护盘明显", "weight": 20, "type": "洗盘"})
+        score_xipan += 5
+        signals.append({"text": "回调不破MA20,强势洗盘,主力护盘明显", "weight": 5, "type": "洗盘"})
+
+    # === 出货/减仓规则（精细化） ===
+    # 规则C1: 高位放量大阴线 → 主力出货（大众交通9/23典型形态）
+    day_change_pct = (last["close"] - last["open"]) / last["open"] * 100 if last["open"] > 0 else 0
+    # 使用5日量比：相对近期均量放大，不受远期大量干扰
+    if day_change_pct < -3 and vol_ratio_5 > 1.5:
+        score_chuhuo += 35
+        signals.append({"text": f"放量大阴线(跌{abs(day_change_pct):.1f}%,量比{vol_ratio_5:.1f}x),主力出货信号强烈", "weight": 35, "type": "出货"})
+
+    # 规则C2: 冲高回落(从高点回落>3%) → 买盘衰竭
+    high_to_close = (last["high"] - last["close"]) / last["high"] * 100 if last["high"] > 0 else 0
+    if high_to_close > 3 and vol_ratio_5 > 1.2:
+        score_chuhuo += 25
+        signals.append({"text": f"冲高回落(高点回落{high_to_close:.1f}%),上方抛压沉重", "weight": 25, "type": "出货"})
+
+    # 规则C3: 放量跌破MA5+MA20 → 断头铡刀
+    if ma5[-1] and ma20[-1] and cur < ma5[-1] and cur < ma20[-1]:
+        if data[-2]["close"] > ma5[-2] and vol_ratio_5 > 1.3:
+            score_chuhuo += 30
+            signals.append({"text": "放量跌破MA5和MA20,断头铡刀形态,趋势转弱", "weight": 30, "type": "出货"})
+
+    # 规则C4: 连续2日放量下跌 → 加速出货
+    if len(data) >= 3:
+        prev_day = data[-2]
+        prev_change = (prev_day["close"] - prev_day["open"]) / prev_day["open"] * 100 if prev_day["open"] > 0 else 0
+        prev_vol_ratio_5 = volumes[-2] / vol_5 if vol_5 > 0 else 1
+        if day_change_pct < -1 and prev_change < -1 and vol_ratio_5 > 1.2 and prev_vol_ratio_5 > 1.2:
+            score_chuhuo += 30
+            signals.append({"text": "连续两日放量下跌,主力加速出货", "weight": 30, "type": "出货"})
+
+    # 规则C5: 高位长上影+缩量 → 拉高试盘失败
+    if upper_shadow > 2 and vol_ratio_5 < 0.8 and change_20d > 10:
+        score_chuhuo += 5
+        signals.append({"text": "高位长上影缩量,拉高试盘失败,主力放弃护盘", "weight": 5, "type": "出货"})
+
+    # 规则C6: 跌破前低 → 破位下行
+    if len(lows) >= 5:
+        recent_low = min(lows[-5:])
+        if cur < recent_low and last["close"] < last["open"]:
+            score_chuhuo += 20
+            signals.append({"text": "跌破近5日低点,破位下行,止损信号", "weight": 20, "type": "出货"})
 
     # 规则W3: 放量下跌后快速缩量 → 恐慌盘涌出后洗盘结束
     if len(volumes) >= 3 and volumes[-3] > vol_20 * 1.3 and volumes[-1] < vol_20 * 0.7:
-        score_xipan += 15
-        signals.append({"text": "放量下跌后快速缩量,恐慌盘涌出,洗盘可能接近尾声", "weight": 15, "type": "洗盘"})
+        score_xipan += 5
+        signals.append({"text": "放量下跌后快速缩量,恐慌盘涌出,洗盘可能接近尾声", "weight": 5, "type": "洗盘"})
 
     # 规则W4: 横盘震荡中量能萎缩 → 主力洗盘等时机
     if abs(change_5d) < 3 and abs(change_20d) < 8 and vol_ratio < 0.75:
-        score_xipan += 15
-        signals.append({"text": "横盘缩量震荡,主力可能在洗盘等待时机", "weight": 15, "type": "洗盘"})
+        score_xipan += 8
+        signals.append({"text": "横盘缩量震荡,主力可能在洗盘等待时机", "weight": 8, "type": "洗盘"})
 
     # 规则W5: 跌破MA5但守住MA20 → 假跌破洗盘
     if ma5[-1] and ma20[-1] and cur < ma5[-1] and cur > ma20[-1] and change_5d < -2:
-        score_xipan += 15
-        signals.append({"text": "跌破MA5守住MA20,假跌破洗盘可能性大", "weight": 15, "type": "洗盘"})
+        score_xipan += 20
+        signals.append({"text": "跌破MA5守住MA20,假跌破洗盘可能性大", "weight": 20, "type": "洗盘"})
 
-    # --- 综合判断 ---
+    # --- 综合判断（精细化） ---
     print(f"[DEBUG] score_xichou={score_xichou} score_xipan={score_xipan} score_chuhuo={score_chuhuo}", flush=True)
     total = score_xichou + score_xipan + score_chuhuo
     if total == 0:
         total = 1
 
-    # 更主动的判断逻辑：只有当分数明确时才判定，否则为震荡
-    if score_xichou >= 20 and score_xichou > score_xipan and score_xichou > score_chuhuo:
+    # 精细化行为判断
+    if score_chuhuo >= 30 and score_chuhuo > score_xichou and score_chuhuo > score_xipan:
+        # 强出货信号
+        if change_20d > 15 and day_change_pct < -3:
+            behavior = "止盈"
+            behavior_desc = "高位放量大阴线,建议止盈减仓锁定利润"
+            behavior_color = "#ef4444"
+        elif cur < (ma20[-1] if ma20[-1] else cur * 0.9):
+            behavior = "止损"
+            behavior_desc = "跌破重要支撑位,建议止损离场"
+            behavior_color = "#ef4444"
+        else:
+            behavior = "减仓"
+            behavior_desc = "出货信号较强,建议减仓控制风险"
+            behavior_color = "#f59e0b"
+    elif score_xichou >= 20 and score_xichou > score_xipan and score_xichou > score_chuhuo:
         behavior = "吸筹"
         behavior_desc = "主力可能正在低位吸筹,关注放量突破和均线金叉信号"
-        behavior_color = "#ef4444"
+        behavior_color = "#16a34a"
     elif score_xipan >= 20 and score_xipan > score_xichou and score_xipan > score_chuhuo:
         behavior = "洗盘"
         behavior_desc = "主力可能正在洗盘,关注缩量企稳后的反弹机会"
-        behavior_color = "#22c55e"
-    elif score_chuhuo >= 20 and score_chuhuo > score_xichou and score_chuhuo > score_xipan:
-        behavior = "出货"
-        behavior_desc = "主力可能正在出货,注意控制风险,不宜追高"
+        behavior_color = "#3b82f6"
+    elif score_chuhuo >= 15 and score_chuhuo > score_xichou:
+        behavior = "观望"
+        behavior_desc = "存在出货迹象,建议观望等待明确方向"
         behavior_color = "#f59e0b"
     else:
-        # 震荡：分数不够明确，或多个信号并存
         behavior = "震荡"
         behavior_desc = "当前处于震荡整理阶段,方向不明,建议观望"
         behavior_color = "#94a3b8"
@@ -978,136 +1492,45 @@ def _analyze_stock(symbol, days=60):
     above_ma5 = cur > ma5[-1] if ma5[-1] else False
     above_ma20 = cur > ma20[-1] if ma20[-1] else False
 
-    # === 加仓/减仓建议（多指标确认） ===
-    position_advice = {
-        "action": "观望",
-        "reason": "",
-        "urgency": "低",
-        "risk_level": "中",
-        "position_pct": 0,
-        "stop_loss": None,
-        "price_suggestion": None,
-        "confirm_signals": [],
-    }
+# === 资金面硬过滤 ===
+    capital_filter = _check_capital_filter(symbol, behavior)
 
-    if behavior == "吸筹":
-        confirm_count = 0
-        confirm_reasons = []
+    # === 大盘上下文（指数趋势闸门） ===
+    market_ctx = _get_market_context()
 
-        if macd_gold_cross:
-            confirm_count += 2
-            confirm_reasons.append("MACD金叉")
-        elif len(dif) > 0 and dif[-1] is not None and dea[-1] is not None and dif[-1] > dea[-1]:
-            confirm_count += 1
-            confirm_reasons.append("MACD向上")
+    # === 增强版仓位建议（含诊断报告/分级仓位/资金过滤） ===
+    position_advice = _build_enhanced_advice(
+        behavior, behavior_desc, behavior_color,
+        cur, ma5, ma10, ma20, change_5d, change_20d,
+        vol_ratio, vol_ratio_5, vol_level, vol_percentile,
+        kdj_oversold, kdj_overbought,
+        macd_gold_cross, macd_dead_cross,
+        ma_bullish, above_ma5, above_ma20,
+        price_change_5d=change_5d, price_change_20d=change_20d,
+        drawdown=drawdown,
+        capital_filter=capital_filter,
+        vol_trend_direction=vol_trend_direction,
+        vp_harmony=vp_harmony,
+        signals=signals,
+        vp_signals=vp_signals,
+        day_change_pct=day_change_pct,
+        high_to_close=(last["high"] - last["close"]) / last["high"] * 100 if last["high"] > 0 else 0,
+        market=market_ctx,
+    )
 
-        if kdj_oversold:
-            confirm_count += 2
-            confirm_reasons.append("KDJ超卖")
-        elif len(k_values) > 0 and k_values[-1] is not None and k_values[-1] < 40:
-            confirm_count += 1
-            confirm_reasons.append("KDJ低位")
-
-        if above_ma20:
-            confirm_count += 1
-            confirm_reasons.append("站上MA20")
-
-        if vol_level in ("地量", "缩量"):
-            confirm_count += 1
-            confirm_reasons.append("缩量企稳")
-
-        position_advice["confirm_signals"] = confirm_reasons
-        if confirm_count >= 4:
-            position_advice["action"] = "加仓"
-            position_advice["reason"] = "主力吸筹+%s,多指标共振" % "+".join(confirm_reasons[:2])
-            position_advice["urgency"] = "高"
-            position_advice["risk_level"] = "低"
-            position_advice["position_pct"] = 30
-        elif confirm_count >= 2:
-            position_advice["action"] = "加仓"
-            position_advice["reason"] = "主力吸筹+%s,可小仓位" % confirm_reasons[0]
-            position_advice["urgency"] = "中"
-            position_advice["risk_level"] = "中"
-            position_advice["position_pct"] = 15
-        else:
-            position_advice["action"] = "观望"
-            position_advice["reason"] = "吸筹但技术指标未确认,等待共振"
-            position_advice["urgency"] = "低"
-            position_advice["risk_level"] = "中"
-
-        if ma20[-1]:
-            position_advice["stop_loss"] = round(ma20[-1] * 0.97, 2)
-        position_advice["price_suggestion"] = round(cur, 2)
-
-    elif behavior == "洗盘":
-        if vol_level == "地量" and change_5d > -3 and above_ma20:
-            position_advice["action"] = "加仓"
-            position_advice["reason"] = "洗盘末期+地量+守住MA20,可能反弹"
-            position_advice["urgency"] = "中"
-            position_advice["risk_level"] = "中"
-            position_advice["position_pct"] = 15
-            position_advice["price_suggestion"] = round(cur, 2)
-            if ma20[-1]:
-                position_advice["stop_loss"] = round(ma20[-1] * 0.97, 2)
-        else:
-            position_advice["action"] = "观望"
-            position_advice["reason"] = "洗盘进行中,等待缩量企稳+守住均线"
-            position_advice["urgency"] = "低"
-            position_advice["risk_level"] = "高"
-
-    elif behavior == "出货":
-        position_advice["action"] = "减仓"
-        position_advice["reason"] = "主力出货,风险加大"
-        position_advice["urgency"] = "高"
-        position_advice["risk_level"] = "高"
-        if ma10[-1] and ma10[-1] > cur:
-            position_advice["price_suggestion"] = round(ma10[-1], 2)
-        if ma20[-1]:
-            position_advice["stop_loss"] = round(ma20[-1] * 0.95, 2)
-
-    elif behavior == "震荡":
-        _dist_from_low = (cur - low_20) / low_20 * 100 if low_20 > 0 else 0
-
-        confirm_count = 0
-        confirm_reasons = []
-        if macd_gold_cross:
-            confirm_count += 2
-            confirm_reasons.append("MACD金叉")
-        if kdj_oversold:
-            confirm_count += 2
-            confirm_reasons.append("KDJ超卖")
-        if above_ma20:
-            confirm_count += 1
-            confirm_reasons.append("站上MA20")
-        if vol_level == "地量":
-            confirm_count += 1
-            confirm_reasons.append("地量")
-
-        position_advice["confirm_signals"] = confirm_reasons
-
-        if _dist_from_low < 5 and confirm_count >= 2:
-            position_advice["action"] = "加仓"
-            position_advice["reason"] = "底部+%s,可试探" % "+".join(confirm_reasons[:2])
-            position_advice["urgency"] = "中"
-            position_advice["risk_level"] = "中"
-            position_advice["position_pct"] = 10
-            position_advice["price_suggestion"] = round(cur, 2)
-            if ma20[-1]:
-                position_advice["stop_loss"] = round(ma20[-1] * 0.97, 2)
-        elif _dist_from_low < 5:
-            position_advice["action"] = "观望"
-            position_advice["reason"] = "接近底部但技术指标未确认,等待信号"
-            position_advice["urgency"] = "低"
-            position_advice["risk_level"] = "中"
-        elif _dist_from_low > 15:
-            position_advice["action"] = "减仓"
-            position_advice["reason"] = "接近顶部,建议减仓锁利"
-            position_advice["urgency"] = "中"
-            position_advice["risk_level"] = "中"
-        else:
-            position_advice["action"] = "观望"
-            position_advice["reason"] = "震荡整理中,方向不明"
-            position_advice["urgency"] = "低"
+    # === 3日上涨概率(回测胜率证据) ===
+    prob_up = _calc_prob_up_3d(signals, market_ctx)
+    if prob_up >= 65:
+        prob_label = "偏多"
+    elif prob_up >= 55:
+        prob_label = "温和偏多"
+    elif prob_up >= 45:
+        prob_label = "中性"
+    elif prob_up >= 35:
+        prob_label = "偏空"
+    else:
+        prob_label = "空头"
+    position_advice.setdefault("risk_notes", []).append(f"3日上涨概率: {prob_up:.0f}% ({prob_label})")
 
     return {
         "symbol": symbol, "name": name,
@@ -1148,6 +1571,9 @@ def _analyze_stock(symbol, days=60):
             "drawdown": round(drawdown, 2),
             "avg_amplitude": round(avg_amplitude, 2),
             "vp_signals": vp_signals[-5:],
+            "market": market_ctx,
+            "prob_up_3d": prob_up,
+            "prob_label": prob_label,
             "position_advice": position_advice,
         },
         "buy_points": buy_points,
@@ -1510,6 +1936,29 @@ def stock_search():
     except Exception as e:
         print(f"[LOG ERR] {e}", flush=True)
     return jsonify({"code": 0, "data": result})
+
+
+@app.route("/api/behavior_history")
+def behavior_history():
+    """获取股票历史行为标签（用于K线tooltip）"""
+    code = request.args.get("code", "").strip()
+    if not code:
+        return jsonify({"code": -1, "msg": "code required"})
+    symbol = _code_to_symbol(code)
+    
+    # 先查缓存
+    cached = _load_behavior_cache(code)
+    if cached:
+        return jsonify({"code": 0, "data": cached, "cached": True})
+    
+    # 计算并缓存
+    history = _compute_behavior_history(symbol, 60)
+    if history:
+        cache_data = {"symbol": symbol, "history": history, "updated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}
+        _save_behavior_cache(code, cache_data)
+        return jsonify({"code": 0, "data": cache_data, "cached": False})
+    
+    return jsonify({"code": 0, "data": {"history": {}}, "cached": False})
 
 
 # ===== 低位埋伏股(价值投资) =====
@@ -3177,6 +3626,162 @@ _SHORT_HIST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shor
 os.makedirs(_SHORT_HIST_DIR, exist_ok=True)
 
 
+# ===== 行为历史缓存 =====
+_BEHAVIOR_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "behavior_cache")
+os.makedirs(_BEHAVIOR_CACHE_DIR, exist_ok=True)
+
+
+def _behavior_cache_file(code):
+    """获取股票行为缓存文件路径"""
+    return os.path.join(_BEHAVIOR_CACHE_DIR, f"{code}.json")
+
+
+def _load_behavior_cache(code):
+    """加载股票行为缓存"""
+    fpath = _behavior_cache_file(code)
+    if os.path.exists(fpath):
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return None
+
+
+def _save_behavior_cache(code, data):
+    """保存股票行为缓存"""
+    fpath = _behavior_cache_file(code)
+    try:
+        with open(fpath, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"[BEHAVIOR CACHE ERR] {e}", flush=True)
+
+
+def _compute_behavior_history(symbol, days=60):
+    """计算股票历史行为（用于K线tooltip显示）"""
+    name, klines = _get_kline(symbol, days)
+    if not klines or len(klines) < 20:
+        return {}
+    
+    # 复用分析逻辑
+    data = []
+    for k in klines:
+        try:
+            data.append({
+                "date": k[0],
+                "open": float(k[1]),
+                "close": float(k[2]),
+                "high": float(k[3]),
+                "low": float(k[4]),
+                "volume": float(k[5]) if len(k) > 5 else 0,
+            })
+        except Exception:
+            continue
+    
+    if len(data) < 20:
+        return {}
+    
+    # 逐日计算行为
+    result = {}
+    for i in range(19, len(data)):  # 从第20天开始（有足够数据计算MA20等）
+        window = data[:i+1]
+        try:
+            analysis = _analyze_window(window)
+            if analysis:
+                result[window[-1]["date"]] = analysis["behavior"]
+        except Exception:
+            continue
+    
+    return result
+
+
+def _analyze_window(data):
+    """对单个窗口计算行为（复用现有逻辑的简化版）"""
+    if len(data) < 20:
+        return None
+    
+    closes = [d["close"] for d in data]
+    volumes = [d["volume"] for d in data]
+    highs = [d["high"] for d in data]
+    lows = [d["low"] for d in data]
+    
+    ma5 = _calc_ma(closes, 5)
+    ma10 = _calc_ma(closes, 10)
+    ma20 = _calc_ma(closes, 20)
+    vol_ma5 = _calc_ma(volumes, 5)
+    vol_ma10 = _calc_ma(volumes, 10)
+    vol_ma20 = _calc_ma(volumes, 20)
+    dif, dea, macd_bar = _calc_macd(closes)
+    k_values, d_values, j_values = _calc_kdj(highs, lows, closes)
+    
+    if not all([ma5[-1], ma20[-1], vol_ma5[-1], vol_ma20[-1]]):
+        return None
+    
+    latest = data[-1]
+    cur = latest["close"]
+    
+    # 核心指标
+    change_20d = (closes[-1] - closes[-20]) / closes[-20] * 100
+    change_5d = (closes[-1] - closes[-5]) / closes[-5] * 100
+    vol_5 = sum(volumes[-5:]) / 5
+    vol_10 = sum(volumes[-10:]) / 10 if len(volumes) >= 10 else vol_5
+    vol_20 = sum(volumes[-20:]) / 20
+    vol_ratio_5 = volumes[-1] / vol_5 if vol_5 > 0 else 1
+    vol_ratio_10 = volumes[-1] / vol_10 if vol_10 > 0 else 1
+    
+    # 当日涨跌
+    day_change_pct = (latest["close"] - latest["open"]) / latest["open"] * 100 if latest["open"] > 0 else 0
+    
+    # 评分
+    score_xichou = 0
+    score_xipan = 0
+    score_chuhuo = 0
+    
+    # 吸筹规则
+    if change_20d < -15 and vol_ratio_5 < 0.8 and abs(change_5d) < 3:
+        score_xichou += 30
+    if change_20d < -15 and change_5d > 5 and vol_ratio_5 > 1.5:
+        score_xichou += 25
+    if ma5[-1] and cur > ma5[-1] and data[-2]["close"] < ma5[-2] and vol_ratio_5 > 1.2:
+        score_xichou += 15
+    
+    # 出货规则
+    if day_change_pct < -3 and vol_ratio_5 > 1.5:
+        score_chuhuo += 35
+    high_to_close = (latest["high"] - latest["close"]) / latest["high"] * 100 if latest["high"] > 0 else 0
+    if high_to_close > 3 and vol_ratio_5 > 1.2:
+        score_chuhuo += 25
+    if ma5[-1] and ma20[-1] and cur < ma5[-1] and cur < ma20[-1]:
+        if data[-2]["close"] > ma5[-2] and vol_ratio_5 > 1.3:
+            score_chuhuo += 30
+    
+    # 洗盘规则
+    if change_20d > 10 and change_5d < -3 and vol_ratio_5 < 0.7:
+        score_xipan += 25
+    if ma20[-1] and cur > ma20[-1] and change_5d < -2 and vol_ratio_5 < 0.8:
+        score_xipan += 20
+    
+    # 判断行为
+    if score_chuhuo >= 20 and score_chuhuo > score_xichou and score_chuhuo > score_xipan:
+        if change_20d > 15 and day_change_pct < -3:
+            behavior = "止盈"
+        elif cur < (ma20[-1] if ma20[-1] else cur * 0.9):
+            behavior = "止损"
+        else:
+            behavior = "减仓"
+    elif score_xichou >= 20 and score_xichou > score_xipan and score_xichou > score_chuhuo:
+        behavior = "吸筹"
+    elif score_xipan >= 20 and score_xipan > score_xichou and score_xipan > score_chuhuo:
+        behavior = "洗盘"
+    elif score_chuhuo >= 15 and score_chuhuo > score_xichou:
+        behavior = "观望"
+    else:
+        behavior = "震荡"
+    
+    return {"behavior": behavior, "scores": {"吸筹": score_xichou, "洗盘": score_xipan, "出货": score_chuhuo}}
+
+
 def _short_hist_file(date_str=None):
     if not date_str:
         date_str = datetime.date.today().strftime("%Y-%m-%d")
@@ -3190,7 +3795,7 @@ def _save_short_alerts(alerts):
     fpath = _short_hist_file()
     exists = os.path.exists(fpath)
     try:
-        with open(fpath, "a", encoding="utf-8", newline="") as f:
+        with open(fpath, "a", encoding="utf-8-sig", newline="") as f:
             writer = csv.writer(f)
             if not exists:
                 writer.writerow(["date", "time", "code", "name", "price", "pct_change",
@@ -3223,7 +3828,7 @@ def _load_short_history(days=10):
         if not os.path.exists(fpath):
             continue
         try:
-            with open(fpath, "r", encoding="utf-8") as f:
+            with open(fpath, "r", encoding="utf-8-sig") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
                     row["date"] = d.strftime("%Y-%m-%d")
@@ -3257,7 +3862,7 @@ def _check_alert_performance(records):
             name, klines = _get_kline(symbol, 10)
             if not klines or len(klines) < 2:
                 r["next_day_change"] = None
-                r["result"] = "未知"
+                r["result"] = "待验证"
                 results.append(r)
                 continue
 
@@ -3349,6 +3954,772 @@ def short_term_save():
         alerts = list(_short_term_alerts)
     _save_short_alerts(alerts)
     return jsonify({"code": 0, "saved": len(alerts)})
+
+
+# ===== 关注列表 =====
+_WATCHLIST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchlist.json")
+
+
+def _load_watchlist():
+    if os.path.exists(_WATCHLIST_FILE):
+        try:
+            with open(_WATCHLIST_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+
+def _save_watchlist(data):
+    with open(_WATCHLIST_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+@app.route("/api/watchlist")
+def get_watchlist():
+    return jsonify({"code": 0, "data": _load_watchlist()})
+
+
+@app.route("/api/watchlist/add", methods=["POST"])
+def add_watchlist():
+    body = request.get_json(force=True, silent=True) or {}
+    code = body.get("code", "").strip()
+    name = body.get("name", "").strip()
+    if not code:
+        return jsonify({"code": 1, "msg": "code required"})
+    wl = _load_watchlist()
+    if any(w["code"] == code for w in wl):
+        return jsonify({"code": 0, "msg": "already exists"})
+    wl.append({"code": code, "name": name, "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")})
+    _save_watchlist(wl)
+    return jsonify({"code": 0, "msg": "ok"})
+
+
+@app.route("/api/watchlist/remove", methods=["POST"])
+def remove_watchlist():
+    body = request.get_json(force=True, silent=True) or {}
+    code = body.get("code", "").strip()
+    if not code:
+        return jsonify({"code": 1, "msg": "code required"})
+    wl = _load_watchlist()
+    wl = [w for w in wl if w["code"] != code]
+    _save_watchlist(wl)
+    return jsonify({"code": 0, "msg": "ok"})
+
+
+# ===== 跷跷板板块资金轮动策略 =====
+_SEESAW_CACHE = {}
+_SEESAW_CACHE_TTL = 1800
+_SEESAW_POS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seesaw_positions.json")
+_SINA_H = ["-H", f"User-Agent: {UA}", "-H", "Referer: https://finance.sina.com.cn/"]
+
+
+def _board_history(category, num=40):
+    """板块每日资金流历史: r0_net=主力净额, turnover=成交额, avg_price=板块均价(合成指数)"""
+    now = time.time()
+    hit = _SEESAW_CACHE.get(category)
+    if hit and hit[0] > now:
+        return hit[1]
+    url = (f"https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+           f"MoneyFlow.ssl_bkzj_zjlrqs?bankuai={category}&sort=opendate&asc=0&num={num}")
+    data = _j(url, _SINA_H)
+    rows = []
+    if isinstance(data, list):
+        for x in data:
+            try:
+                rows.append({
+                    "date": x.get("opendate", ""),
+                    "price": float(x.get("avg_price", 0) or 0),
+                    "chg": float(x.get("avg_changeratio", 0) or 0) * 100,
+                    "turnover": float(x.get("turnover", 0) or 0),
+                    "net": float(x.get("netamount", 0) or 0),
+                    "r0": float(x.get("r0_net", 0) or 0),
+                })
+            except Exception:
+                continue
+    rows.reverse()  # 旧->新
+    _SEESAW_CACHE[category] = (now + _SEESAW_CACHE_TTL, rows)
+    return rows
+
+
+def _board_stocks(category, max_pages=5):
+    """板块成分股(按涨幅降序), 翻页取全"""
+    out = []
+    for page in range(1, max_pages + 1):
+        url = (f"https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+               f"Market_Center.getHQNodeData?page={page}&num=100&sort=changepercent&asc=0&node={category}")
+        data = _j(url, _SINA_H)
+        if not isinstance(data, list) or not data:
+            break
+        for x in data:
+            try:
+                code = x.get("code", "")
+                name = x.get("name", "")
+                sym = x.get("symbol", "")
+                if not code or sym.startswith("bj") or "ST" in name.upper():
+                    continue
+                out.append({
+                    "code": code, "name": name, "symbol": sym,
+                    "price": float(x.get("trade", 0) or 0),
+                    "pct": float(x.get("changepercent", 0) or 0),
+                })
+            except Exception:
+                continue
+        if len(data) < 100:
+            break
+    return out
+
+
+def _seesaw_market():
+    """大盘环境: 上证指数近况 → 增量/存量震荡/系统性下跌"""
+    rows = []
+    start = (datetime.date.today() - datetime.timedelta(days=60)).strftime("%Y%m%d")
+    end = datetime.date.today().strftime("%Y%m%d")
+    raw = _curl(f"https://q.stock.sohu.com/hisHq?code=zs_000001&start={start}&end={end}", ["-H", f"User-Agent: {UA}"])
+    try:
+        arr = json.loads(raw)
+        hq = arr[0].get("hq", []) if isinstance(arr, list) and arr else []
+        for r in hq:
+            # [date, open, close, chg, pct, low, high, vol(手), amount(万元), -]
+            rows.append({"date": r[0], "close": float(r[2]), "pct": float(str(r[4]).replace("%", "")),
+                         "vol": float(r[7]), "amount": float(r[8])})
+    except Exception:
+        rows = []
+    if len(rows) < 12:
+        # 腾讯备用
+        raw = _curl("https://proxy.finance.qq.com/ifzqgtimg/appstock/app/fqkline/get?param=sh000001,day,,,40,qfq",
+                    ["-H", f"User-Agent: {UA}"])
+        try:
+            info = json.loads(raw).get("data", {}).get("sh000001", {})
+            ks = info.get("qfqday") or info.get("day") or []
+            for i, k in enumerate(ks):
+                pct = (float(k[2]) / float(ks[i - 1][2]) - 1) * 100 if i else 0.0
+                rows.append({"date": k[0], "close": float(k[2]), "pct": round(pct, 2), "vol": float(k[5]), "amount": 0})
+        except Exception:
+            rows = []
+    if len(rows) < 12:
+        return {"regime": "数据不足", "enabled": False, "reason": "上证指数行情获取失败,无法判定大盘,暂停策略"}
+
+    vols = [r["vol"] for r in rows]
+    # 系统性下跌: 连续2日放量大跌(跌≥1%且量>前5日均量)
+    sys_flag = False
+    for i in (len(rows) - 1, len(rows) - 2):
+        prev5 = vols[max(0, i - 5):i]
+        if rows[i]["pct"] <= -1.0 and prev5 and vols[i] > sum(prev5) / len(prev5):
+            sys_flag = True
+        else:
+            sys_flag = False
+            break
+    if sys_flag:
+        return {"regime": "系统性下跌", "enabled": False,
+                "reason": "大盘连续2日放量大跌,暂停所有买入信号",
+                "sh_close": rows[-1]["close"], "sh_pct": rows[-1]["pct"]}
+    # 增量普涨: 近5日≥4日上涨 + 量能较前5日放大30%以上 + 近5日涨幅>3%
+    last5 = rows[-5:]
+    up_days = sum(1 for r in last5 if r["pct"] > 0)
+    vol5_now = sum(vols[-5:]) / 5
+    vol5_prev = sum(vols[-10:-5]) / 5 if len(vols) >= 10 else vol5_now
+    chg5 = (rows[-1]["close"] / rows[-6]["close"] - 1) * 100 if len(rows) >= 6 else 0
+    if up_days >= 4 and vol5_prev > 0 and vol5_now > vol5_prev * 1.3 and chg5 > 3:
+        return {"regime": "增量(全面普涨)", "enabled": False,
+                "reason": "大盘增量全面普涨,跷跷板效应失效,暂停本策略选股",
+                "sh_close": rows[-1]["close"], "sh_pct": rows[-1]["pct"]}
+    return {"regime": "存量震荡", "enabled": True,
+            "reason": "存量资金博弈,板块跷跷板轮动有效,策略开启",
+            "sh_close": rows[-1]["close"], "sh_pct": rows[-1]["pct"]}
+
+
+def _limit_up_threshold(code):
+    if code.startswith(("300", "301", "688", "689")):
+        return 19.8
+    return 9.8
+
+
+def _seesaw_candidates(market):
+    """买入筛选: 5条规则全命中"""
+    with _lock:
+        boards = list(_store.get("sector", []))
+    if not boards:
+        boards = _sina(0, 100)
+    candidates, rejected = [], []
+
+    for b in boards:
+        cat, bname = b.get("code", ""), b.get("name", "")
+        if not cat or b.get("net_inflow", 0) <= 0:
+            continue  # 规则2前置: 今日净流入必须>0
+        hist = _board_history(cat)
+        fails = []
+        checks = {"今日净流入(亿)": round(b["net_inflow"] / 1e8, 2)}
+
+        # 规则1: 近20日最大涨幅<25%
+        prices = [h["price"] for h in hist[-21:] if h["price"] > 0]
+        max_gain = None
+        if len(prices) >= 10:
+            mn, mx = prices[0], prices[0]
+            for p in prices:
+                mn = min(mn, p)
+                mx = max(mx, p)
+            max_gain = round((mx / mn - 1) * 100, 1) if mn > 0 else None
+            checks["20日最大涨幅%"] = max_gain
+            if max_gain is None or max_gain >= 25:
+                fails.append("R1近20日最大涨幅≥25%(非横盘)")
+        else:
+            fails.append("R1历史数据不足20日")
+
+        # 规则2: 连续2日主力净流入(r0_net)
+        r0s = [h["r0"] for h in hist[-3:]]
+        if len(r0s) >= 2 and r0s[-1] > 0 and r0s[-2] > 0:
+            # 连续流入天数
+            streak = 0
+            for v in reversed([h["r0"] for h in hist]):
+                if v > 0:
+                    streak += 1
+                else:
+                    break
+            checks["连续主力流入天数"] = streak
+            checks["今日主力净流入(亿)"] = round(r0s[-1] / 1e8, 2)
+        else:
+            fails.append("R2未连续2日主力净流入(或单日脉冲)")
+
+        # 规则3: 连续2日量>20日均量, 且拒绝极端爆量(≤2.5倍)
+        tos = [h["turnover"] for h in hist if h["turnover"] > 0]
+        if len(tos) >= 22:
+            base = sum(tos[-22:-2]) / 20
+            d1, d2 = tos[-2], tos[-1]
+            checks["量比20日(昨/今)"] = [round(d1 / base, 2), round(d2 / base, 2)] if base else None
+            if not (d1 > base and d2 > base):
+                fails.append("R3未连续2日高于20日均量")
+            elif d2 > base * 2.5:
+                fails.append("R3单日极端爆量(>2.5倍均量),拒绝")
+        else:
+            fails.append("R3量能历史不足22日")
+
+        # 规则5前置: 大盘(调用方判断 enabled, 此处不重复)
+
+        if fails:
+            rejected.append({"name": bname, "code": cat, "fails": fails, "checks": checks})
+            continue
+
+        # 规则4: 涨停≥2家 且 >60%成分股收红 (需成分股)
+        stocks = _board_stocks(cat)
+        if not stocks:
+            rejected.append({"name": bname, "code": cat, "fails": ["R4成分股获取失败"], "checks": checks})
+            continue
+        limit_up = [s for s in stocks if s["pct"] >= _limit_up_threshold(s["code"])]
+        red = [s for s in stocks if s["pct"] > 0]
+        red_pct = round(len(red) / len(stocks) * 100, 1)
+        checks["涨停家数"] = len(limit_up)
+        checks["红盘占比%"] = red_pct
+        fails4 = []
+        if len(limit_up) < 2:
+            fails4.append("R4涨停<2家")
+        if red_pct <= 60:
+            fails4.append("R4红盘占比≤60%(板块未整体启动)")
+        if fails4:
+            rejected.append({"name": bname, "code": cat, "fails": fails4, "checks": checks})
+            continue
+
+        # 通过全部规则 → 候选
+        hist_prices = [h["price"] for h in hist[-20:] if h["price"] > 0]
+        resistance = round(max(hist_prices), 2) if hist_prices else None
+        support = round(min(hist_prices[-10:]), 2) if hist_prices else None
+        last_chg = round(hist[-1]["chg"], 2) if hist else b.get("avg_change", 0)
+        candidates.append({
+            "name": bname, "code": cat,
+            "checks": checks,
+            "max_gain20": max_gain,
+            "inflow_streak": checks.get("连续主力流入天数", 0),
+            "board_chg": last_chg,
+            "core_stocks": [{"code": s["code"], "name": s["name"], "price": s["price"], "pct": s["pct"]}
+                            for s in stocks[:5]],
+            "support": support, "resistance": resistance,
+            "limit_up": len(limit_up), "red_pct": red_pct,
+        })
+
+    # 优先级: 横盘更久(20日涨幅更小) + 资金流入持续性更强
+    candidates.sort(key=lambda c: (c.get("max_gain20") or 999, -(c.get("inflow_streak") or 0)))
+    return candidates, rejected
+
+
+def _load_seesaw_positions():
+    try:
+        with open(_SEESAW_POS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def _save_seesaw_positions(positions):
+    with open(_SEESAW_POS_FILE, "w", encoding="utf-8") as f:
+        json.dump(positions, f, ensure_ascii=False, indent=1)
+
+
+def _seesaw_holdings():
+    """持仓检测: 4条卖出规则 + 止盈止损硬规则"""
+    positions = _load_seesaw_positions()
+    results = []
+    changed = False
+    for p in positions:
+        hist = _board_history(p["code"], num=30)
+        entry = float(p.get("entry_price") or 0)
+        peak = float(p.get("peak_price") or entry)
+        triggers = []
+        if len(hist) >= 3:
+            # 更新持仓峰值(板块均价)
+            cur = hist[-1]["price"]
+            if cur > peak:
+                peak = cur
+                p["peak_price"] = peak
+                changed = True
+            pnl = round((cur / entry - 1) * 100, 2) if entry > 0 else 0
+            # S2: 连续2日主力净流出
+            r0s = [h["r0"] for h in hist[-2:]]
+            if len(r0s) == 2 and r0s[0] < 0 and r0s[1] < 0:
+                triggers.append("S2 连续2日主力资金净流出")
+            # S3: 价格创新高但量能明显萎缩(<0.8倍)
+            if len(hist) >= 21:
+                p20 = [h["price"] for h in hist[-20:]]
+                if hist[-1]["price"] >= max(p20) and hist[-1]["turnover"] < hist[-2]["turnover"] * 0.8:
+                    triggers.append("S3 价格创20日新高但成交量明显萎缩(量价背离)")
+            # S1: 高位放量滞涨(数据限制: 无OHLC,用涨幅+量能近似)
+            if len(hist) >= 21:
+                prices = [h["price"] for h in hist[-20:]]
+                gain20 = (max(prices) / min(prices) - 1) * 100 if min(prices) > 0 else 0
+                tos = [h["turnover"] for h in hist[-21:-1] if h["turnover"] > 0]
+                if gain20 >= 15 and tos and hist[-1]["turnover"] > sum(tos) / len(tos) * 1.1 and hist[-1]["chg"] <= 0.3:
+                    triggers.append("S1 高位(20日涨幅≥15%)放量滞涨")
+            # 止盈止损硬规则
+            if pnl >= 12:
+                triggers.append(f"H1 盈利{pnl}%≥12%,触发分批止盈")
+            dd = round((cur / peak - 1) * 100, 2) if peak > 0 else 0
+            if dd <= -8:
+                triggers.append(f"H2 自峰值回撤{dd}%≤-8%,无条件离场")
+        else:
+            pnl = 0
+            dd = 0
+            triggers.append("板块历史数据不足,无法完整检测")
+        action = "持有"
+        if any(t.startswith(("H1", "S2", "S3")) for t in triggers):
+            action = "准备卖出/切换"
+        if any(t.startswith("H2") for t in triggers):
+            action = "立即离场"
+        results.append({
+            "name": p.get("name", ""), "code": p.get("code", ""),
+            "entry_price": entry, "peak_price": peak,
+            "pnl_pct": pnl if len(hist) >= 3 else None,
+            "triggers": triggers, "action": action, "date": p.get("date", ""),
+        })
+    if changed:
+        _save_seesaw_positions(positions)
+    return results
+
+
+@app.route("/api/seesaw")
+def seesaw():
+    """跷跷板板块资金轮动策略分析(严格按规则,数据驱动)"""
+    market = _seesaw_market()
+    holdings = _seesaw_holdings()
+    candidates, rejected = [], []
+    paused = None
+    if not market.get("enabled"):
+        paused = market.get("reason")
+    else:
+        candidates, rejected = _seesaw_candidates(market)
+
+    risks = []
+    if paused:
+        risks.append(f"【暂停】{paused}")
+    for c in candidates:
+        rr = []
+        if c.get("max_gain20") is not None and c["max_gain20"] >= 15:
+            rr.append(f"20日已涨{c['max_gain20']}%,接近横盘上限,追高风险")
+        if c.get("board_chg") is not None and c["board_chg"] >= 3:
+            rr.append(f"板块单日涨{c['board_chg']}%,注意冲高回落")
+        if (c.get("inflow_streak") or 0) <= 2:
+            rr.append("资金刚翻红≤2日,持续性待观察,防一日游")
+        if c.get("support") and c.get("resistance"):
+            rr.append(f"支撑¥{c['support']} / 压力¥{c['resistance']}(20日高)")
+        for s in c.get("core_stocks", []):
+            if s["pct"] >= 7:
+                rr.append(f"{s['name']}({s['code']})已涨{s['pct']}%,勿追高")
+        risks.append(f"{c['name']}: " + ";".join(rr) if rr else f"{c['name']}: 无特别风险")
+    risks.append("仓位规则: 轮动总资金=小仓位(底仓不参与),单板块≤40%,持仓≤3板块,2选1优先横盘更久+流入更持续的")
+    risks.append("离场规则: 盈利12%分批止盈,自峰值回撤8%无条件离场")
+    risks.append("数据限制: 板块无OHLC,'长上影线'形态暂用放量滞涨近似;突发小道消息类(无资金配合)已被资金规则自动过滤")
+
+    return jsonify({"code": 0, "data": {
+        "market": market,
+        "paused": paused,
+        "holdings": holdings,
+        "candidates": candidates,
+        "rejected_count": len(rejected),
+        "rejected_sample": rejected[:8],
+        "risks": risks,
+        "generated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+    }})
+
+
+@app.route("/api/seesaw/position", methods=["POST"])
+def seesaw_position():
+    body = request.get_json(force=True, silent=True) or {}
+    action = body.get("action", "add")
+    cat = (body.get("code") or "").strip()
+    if not cat:
+        return jsonify({"code": 1, "msg": "code required"})
+    positions = _load_seesaw_positions()
+    if action == "remove":
+        positions = [p for p in positions if p.get("code") != cat]
+        _save_seesaw_positions(positions)
+        return jsonify({"code": 0, "msg": "removed"})
+    hist = _board_history(cat, num=5)
+    price = float(body.get("price") or 0) or (hist[-1]["price"] if hist else 0)
+    if price <= 0:
+        return jsonify({"code": 1, "msg": "无法获取板块价格"})
+    if not any(p.get("code") == cat for p in positions):
+        positions.append({
+            "code": cat, "name": body.get("name", ""),
+            "entry_price": price, "peak_price": price,
+            "date": datetime.date.today().strftime("%Y-%m-%d"),
+        })
+        _save_seesaw_positions(positions)
+    return jsonify({"code": 0, "msg": "ok"})
+
+
+# ===== 阴线尾盘隔夜套利策略 =====
+_YX_POS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "yinxian_positions.json")
+_YX_LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "yinxian_log.json")
+
+
+def _yinxian_pool():
+    """股票池: 全A按成交额Top200(不按板块,不打板)"""
+    out = []
+    for page in (1, 2):
+        url = (f"https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+               f"Market_Center.getHQNodeData?page={page}&num=100&sort=amount&asc=0&node=hs_a")
+        data = _j(url, _SINA_H)
+        if not isinstance(data, list):
+            break
+        for x in data:
+            try:
+                code, name, sym = x.get("code", ""), x.get("name", ""), x.get("symbol", "")
+                if not code or sym.startswith("bj") or "ST" in name.upper():
+                    continue
+                out.append({"symbol": sym, "code": code, "name": name,
+                            "price": float(x.get("trade", 0) or 0),
+                            "pct": float(x.get("changepercent", 0) or 0),
+                            "amount": float(x.get("amount", 0) or 0) / 1e4})  # 万元
+            except Exception:
+                continue
+    # 去重保序
+    seen, pool = set(), []
+    for s in out:
+        if s["symbol"] not in seen:
+            seen.add(s["symbol"])
+            pool.append(s)
+    return pool
+
+
+def _yinxian_eval(klines, rt=None):
+    """选股6规则(全命中): 阴线+缩量回调到MA10+前期爆量+MA10温和向上+MA10/MA20近
+    klines: [date, open, close, high, low, volume]
+    返回: {"pass":True,...} 或 {"pass":False,"reason":"淘汰规则"}"""
+    try:
+        if not klines or len(klines) < 25:
+            return {"pass": False, "reason": "K线不足25日"}
+        opens = [float(k[1]) for k in klines]
+        closes = [float(k[2]) for k in klines]
+        highs = [float(k[3]) for k in klines]
+        lows = [float(k[4]) for k in klines]
+        vols = [float(k[5]) for k in klines if len(k) > 5]
+        if len(vols) < 21 or len(closes) < 21:
+            return {"pass": False, "reason": "K线不足21日"}
+        o, c, h, l, v = opens[-1], closes[-1], highs[-1], lows[-1], vols[-1]
+        checks = {}
+
+        # R1 阴线
+        if rt is not None:
+            # 用实时open/close覆盖(14:30盘中最后一根K线未收盘)
+            o, c = rt.get("open", o), rt.get("price", c)
+            h, l = max(h, rt.get("high", h)), min(l, rt.get("low", l))
+            v = max(v, rt.get("volume", v))
+        if c >= o:
+            return {"pass": False, "reason": "R1非阴线"}
+        checks["阴线"] = f"开{o} 收{c}"
+
+        # R2 缩量: 今日量<昨日量 且 ≤5日均量
+        vol5 = sum(vols[-6:-1]) / 5
+        shrink = v / vols[-2] if vols[-2] > 0 else 1
+        if not (v < vols[-2] and v <= vol5 * 1.05):
+            return {"pass": False, "reason": "R2非缩量"}
+        checks["缩量"] = f"{shrink:.2f}×昨量"
+
+        # R3 缩量回调到10日均线(低点触及MA10附近,收盘守住)
+        ma10 = sum(closes[-10:]) / 10
+        touch = (l <= ma10 * 1.015 and c >= ma10 * 0.99) or abs(c - ma10) / ma10 <= 0.012
+        if not touch:
+            return {"pass": False, "reason": "R3未回踩MA10"}
+        checks["回踩MA10"] = f"MA10={round(ma10,2)} 距离{round((c/ma10-1)*100,2)}%"
+
+        # R4 前期有爆量(前10日内≥2×20日均量)
+        base_vol = sum(vols[-21:-1]) / 20
+        surge = max(vols[-11:-1]) / base_vol if base_vol > 0 else 0
+        if surge < 2:
+            return {"pass": False, "reason": "R4前期无爆量"}
+        checks["前期爆量"] = f"{surge:.1f}×20日均量"
+
+        # R5 MA10温和向上(昨日起抬升,5日斜率0~6%)
+        ma10_prev = sum(closes[-11:-1]) / 10
+        ma10_5 = sum(closes[-15:-5]) / 10
+        slope5 = (ma10 / ma10_5 - 1) * 100 if ma10_5 > 0 else 0
+        if not (ma10 > ma10_prev and 0 < slope5 <= 6):
+            return {"pass": False, "reason": "R5非温和向上"}
+        checks["MA10温和向上"] = f"5日斜率{round(slope5,2)}%"
+
+        # R6 MA10与MA20距离近(≤2%)
+        ma20 = sum(closes[-20:]) / 20
+        gap = abs(ma10 - ma20) / ma20 * 100
+        if gap > 2:
+            return {"pass": False, "reason": "R6均线发散"}
+        checks["MA10/20距离"] = f"{round(gap,2)}%"
+
+        # 评分: 越贴MA10+缩量越狠+爆量越足 越优
+        score = max(0, 100 - abs(c / ma10 - 1) * 3000) * 0.4 \
+              + min(40, (1 - shrink) * 60) * 0.3 \
+              + min(30, surge * 8) * 0.3
+        return {
+            "pass": True,
+            "score": round(min(100, score)),
+            "checks": checks,
+            "ma10": round(ma10, 2), "ma20": round(ma20, 2),
+            "price": c, "pct": round((c / closes[-2] - 1) * 100, 2) if len(closes) >= 2 else 0,
+            "shrink": round(shrink, 2), "surge": round(surge, 1),
+            "gap_pct": round(gap, 2),
+        }
+    except Exception:
+        return {"pass": False, "reason": "解析异常"}
+
+
+def _run_yinxian_scan():
+    """14:30选股: 实时粗筛(阴线+流动性) → K线精筛6规则
+    返回 (命中列表, 池子数, 淘汰统计)"""
+    pool = _yinxian_pool()
+    if not pool:
+        return [], 0, {}
+    quotes = _get_realtime_batch([s["symbol"] for s in pool])
+    qmap = {q["symbol"]: q for q in quotes}
+    # 粗筛: 阴线(价<开) + 亿级成交 + 跌幅不过深(排除闪崩)
+    cands = []
+    stats = {"池子": len(pool), "粗筛": 0}
+    for s in pool:
+        q = qmap.get(s["symbol"])
+        if not q or q["price"] <= 0 or q["open"] <= 0:
+            continue
+        if q["price"] >= q["open"]:
+            continue
+        if q["amount"] < 1e4:  # 成交额<1亿不看
+            continue
+        if q["pct_change"] < -6:
+            continue
+        cands.append(s)
+    stats["粗筛"] = len(cands)
+
+    results = []
+
+    def _work(s):
+        try:
+            q = qmap.get(s["symbol"])
+            _, kl = _get_kline(s["symbol"], 40)
+            if not kl:
+                return "retry", None, "K线获取失败"
+            ev = _yinxian_eval(kl, rt=q)
+            if ev.get("pass"):
+                r = {k: v for k, v in ev.items() if k != "pass"}
+                r.update({"symbol": s["symbol"], "code": s["code"], "name": s["name"]})
+                return "hit", r, None
+            return "ok", None, ev.get("reason", "未知")
+        except Exception:
+            return "retry", None, "异常"
+
+    from concurrent.futures import ThreadPoolExecutor
+    # 4路并发: 8路易触发腾讯/搜狐限流导致大面积"K线不足"
+    retry_idx = []
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for i, (tag, r, why) in enumerate(ex.map(_work, cands)):
+            if tag == "hit":
+                results.append(r)
+            elif tag == "retry":
+                retry_idx.append(i)
+            elif why:  # 明确规则淘汰才计数;获取失败留给串行重试统计
+                stats[why] = stats.get(why, 0) + 1
+    # 失败的串行重试一次(绕开并发限流)
+    for i in retry_idx:
+        tag, r, why = _work(cands[i])
+        if tag == "hit":
+            results.append(r)
+        elif why:
+            stats[why] = stats.get(why, 0) + 1
+    stats["命中"] = len(results)
+    results.sort(key=lambda x: -x["score"])
+    return results, len(pool), stats
+
+
+def _load_yx_positions():
+    try:
+        with open(_YX_POS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def _save_yx_positions(ps):
+    with open(_YX_POS_FILE, "w", encoding="utf-8") as f:
+        json.dump(ps, f, ensure_ascii=False, indent=1)
+
+
+def _yinxian_holdings():
+    """卖出规则执行检测(次日): 开盘破MA10止损 / +2%止盈 / 冲高破分时均线卖 / 14:55尾盘清仓"""
+    ps = _load_yx_positions()
+    if not ps:
+        return []
+    quotes = _get_realtime_batch([p["symbol"] for p in ps])
+    qmap = {q["symbol"]: q for q in quotes}
+    now = datetime.datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    is_weekday = now.weekday() < 5
+    out = []
+    for p in ps:
+        q = qmap.get(p["symbol"])
+        entry = float(p.get("entry") or 0)
+        item = dict(p)
+        item["pnl_pct"] = round((q["price"] / entry - 1) * 100, 2) if q and entry > 0 else None
+        item["price"] = q["price"] if q else None
+        item["signals"] = []
+        item["action"] = "持有"
+        if not q:
+            item["signals"].append("行情获取失败")
+            out.append(item)
+            continue
+
+        # MA10参照: 截至昨日的10日均线(次日开盘对比)
+        _, kl = _get_kline(p["symbol"], 30)
+        ma10_ref = p.get("ma10")
+        try:
+            closes_prior = [float(k[2]) for k in kl if k[0] < today]
+            if len(closes_prior) >= 10:
+                ma10_ref = sum(closes_prior[-10:]) / 10
+        except Exception:
+            pass
+        item["ma10_ref"] = round(ma10_ref, 2) if ma10_ref else None
+
+        # 分时均线(VWAP) = 成交额(万)×100 / 成交量(手)
+        vwap = (q["amount"] * 100 / q["volume"]) if q.get("volume") else None
+        item["vwap"] = round(vwap, 2) if vwap else None
+
+        if p.get("entry_date") == today:
+            item["signals"].append("今日建仓,明日执行卖出规则")
+            item["action"] = "持有"
+            out.append(item)
+            continue
+        if not ma10_ref:
+            item["signals"].append("MA10数据缺失,请手动判断")
+            item["action"] = "持有"
+            out.append(item)
+            continue
+
+        sell = None
+        # 1) 次日开盘破10日线 → 直接止损
+        if ma10_ref and q["open"] < ma10_ref:
+            sell = f"开盘价{q['open']}<MA10 {round(ma10_ref,2)},破10日线"
+            item["action"] = "止损"
+        # 2) 盈利2% → 止盈
+        elif entry > 0 and q["price"] >= entry * 1.02:
+            sell = f"盈利{round((q['price']/entry-1)*100,2)}%≥2%"
+            item["action"] = "止盈"
+        # 3) 冲高后破分时均线 → 立刻卖
+        elif vwap and q["high"] > vwap * 1.003 and q["price"] < vwap * 0.999:
+            sell = f"冲高后跌破分时均线(VWAP {round(vwap,2)})"
+            item["action"] = "破分时均线"
+        # 4) 尾盘(≥14:55)没达标 → 全部清仓
+        elif is_weekday and (now.hour * 100 + now.minute) >= 1455:
+            sell = "尾盘未达止盈/止损标准,全部清仓"
+            item["action"] = "尾盘清仓"
+        if sell:
+            item["signals"].append(sell)
+        else:
+            item["signals"].append("规则内,继续持有")
+        out.append(item)
+    return out
+
+
+@app.route("/api/yinxian/scan")
+def yinxian_scan():
+    t0 = time.time()
+    results, pool_n, stats = _run_yinxian_scan()
+    return jsonify({"code": 0, "data": results, "pool": pool_n, "stats": stats,
+                    "cost": round(time.time() - t0, 1),
+                    "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")})
+
+
+@app.route("/api/yinxian/holdings")
+def yinxian_holdings():
+    return jsonify({"code": 0, "data": _yinxian_holdings(),
+                    "time": datetime.datetime.now().strftime("%H:%M")})
+
+
+@app.route("/api/yinxian/buy", methods=["POST"])
+def yinxian_buy():
+    body = request.get_json(force=True, silent=True) or {}
+    symbol = (body.get("symbol") or "").strip()
+    if not symbol:
+        return jsonify({"code": 1, "msg": "symbol required"})
+    ps = _load_yx_positions()
+    if any(p["symbol"] == symbol for p in ps):
+        return jsonify({"code": 1, "msg": "已持有该标的"})
+    price = float(body.get("price") or 0)
+    _, kl = _get_kline(symbol, 30)
+    ma10 = None
+    try:
+        closes = [float(k[2]) for k in kl]
+        if len(closes) >= 10:
+            ma10 = round(sum(closes[-10:]) / 10, 3)
+    except Exception:
+        pass
+    if price <= 0:
+        return jsonify({"code": 1, "msg": "价格无效"})
+    ps.append({
+        "symbol": symbol, "code": body.get("code", ""), "name": body.get("name", ""),
+        "entry": price, "entry_date": datetime.date.today().strftime("%Y-%m-%d"),
+        "ma10": ma10, "time": datetime.datetime.now().strftime("%H:%M"),
+    })
+    _save_yx_positions(ps)
+    return jsonify({"code": 0, "msg": "ok"})
+
+
+@app.route("/api/yinxian/sell", methods=["POST"])
+def yinxian_sell():
+    body = request.get_json(force=True, silent=True) or {}
+    symbol = (body.get("symbol") or "").strip()
+    ps = _load_yx_positions()
+    hit = [p for p in ps if p["symbol"] == symbol]
+    if hit:
+        p = hit[0]
+        # 记录复盘日志
+        try:
+            log = []
+            if os.path.exists(_YX_LOG_FILE):
+                with open(_YX_LOG_FILE, "r", encoding="utf-8") as f:
+                    log = json.load(f)
+            log.append({**{k: p.get(k) for k in ("symbol", "code", "name", "entry", "entry_date")},
+                        "exit_price": body.get("price"), "reason": body.get("reason", ""),
+                        "exit_date": datetime.date.today().strftime("%Y-%m-%d"),
+                        "exit_time": datetime.datetime.now().strftime("%H:%M")})
+            with open(_YX_LOG_FILE, "w", encoding="utf-8") as f:
+                json.dump(log[-200:], f, ensure_ascii=False, indent=1)
+        except Exception:
+            pass
+        ps = [x for x in ps if x["symbol"] != symbol]
+        _save_yx_positions(ps)
+    return jsonify({"code": 0, "msg": "ok"})
 
 
 if __name__ == "__main__":
