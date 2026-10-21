@@ -134,6 +134,33 @@ def parse_klines(klines):
     return data
 
 
+def _get_market_states(days=180):
+    """上证指数分状态: 每交易日 chg20>=+5% 牛, <=-5% 熊, 其余震荡。
+    返回 {date: (state, chg20)}，与 app.py 大盘闸门口径一致。"""
+    _, klines = _get_kline("sh000001", days=days)
+    data = parse_klines(klines)
+    states = {}
+    for i, x in enumerate(data):
+        if i < 20:
+            continue
+        c_now, c_20 = x["close"], data[i - 20]["close"]
+        if c_now <= 0 or c_20 <= 0:
+            continue
+        chg20 = (c_now / c_20 - 1) * 100
+        st = "bull" if chg20 >= 5 else ("bear" if chg20 <= -5 else "normal")
+        states[x["date"]] = (st, round(chg20, 2))
+    return states
+
+
+# 未来3日涨跌幅分布分桶（与"推算1%/5%/10%概率分布"对应的粒度）
+DIST_BUCKETS = [
+    ("跌>10%", -100, -10), ("跌7-10%", -10, -7), ("跌5-7%", -7, -5),
+    ("跌3-5%", -5, -3), ("跌1-3%", -3, -1), ("跌0-1%", -1, 0),
+    ("涨0-1%", 0, 1), ("涨1-3%", 1, 3), ("涨3-5%", 3, 5),
+    ("涨5-7%", 5, 7), ("涨7-10%", 7, 10), ("涨>10%", 10, 100),
+]
+
+
 def calc_ma(vals, period):
     out = [None] * len(vals)
     for i in range(period - 1, len(vals)):
@@ -355,6 +382,13 @@ def run_backtest():
     stock_results = []
     window_recs = []   # 校准用: 每窗口 {sigs, fwd3}
 
+    # 分状态(牛/熊/震荡)统计: 每个窗口按当日大盘chg20归类
+    market_states = _get_market_states(180)
+    if not market_states:
+        print("[WARN] 上证指数数据获取失败, 分状态分布统计为空", flush=True)
+    state_stats = {s: {"n": 0, "r1": 0.0, "r3": 0.0, "w3": 0} for s in ("bull", "normal", "bear")}
+    state_dist = {s: {lbl: 0 for lbl, _, _ in DIST_BUCKETS} for s in ("bull", "normal", "bear")}
+
     for code in UNIVERSE:
         symbol = ("sh" if code.startswith(("6", "9")) else "sz") + code
         name, klines = _get_kline(symbol, days=180)
@@ -377,6 +411,19 @@ def run_backtest():
                 "sigs": [(s["id"], s["weight"]) for s in signals],
                 "fwd3": fwd[3],
             })
+
+            # 分状态分布
+            st, _chg = market_states.get(data[T]["date"], ("normal", 0.0))
+            ss = state_stats[st]
+            ss["n"] += 1
+            ss["r1"] += fwd[1]
+            ss["r3"] += fwd[3]
+            if fwd[3] > 0:
+                ss["w3"] += 1
+            for lbl, lo, hi in DIST_BUCKETS:
+                if lo <= fwd[3] < hi:
+                    state_dist[st][lbl] += 1
+                    break
 
             for s in signals:
                 rs = rule_stats.setdefault(s["id"], {"n": 0, "r1": 0.0, "r3": 0.0, "r5": 0.0, "w3": 0})
@@ -466,6 +513,22 @@ def run_backtest():
         "rules": rule_rows,
         "behaviors": behav_rows,
         "calibration": calib_rows,
+        "state_dist": {
+            "states": {
+                st: {
+                    "n": ss["n"],
+                    "win3": round(ss["w3"] / ss["n"] * 100, 1) if ss["n"] else 0,
+                    "ret3": round(ss["r3"] / ss["n"], 3) if ss["n"] else 0,
+                    "buckets": [
+                        {"label": lbl, "n": state_dist[st][lbl],
+                         "pct": round(state_dist[st][lbl] / ss["n"] * 100, 1) if ss["n"] else 0}
+                        for lbl, _, _ in DIST_BUCKETS
+                    ],
+                }
+                for st, ss in state_stats.items() if ss["n"] > 0
+            },
+            "bucket_labels": [lbl for lbl, _, _ in DIST_BUCKETS],
+        },
         "per_stock": stock_results,
     }
     with open("backtest_rules_result.json", "w", encoding="utf-8") as f:

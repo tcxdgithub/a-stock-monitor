@@ -902,6 +902,26 @@ def _load_rule_stats():
     return _rule_stats
 
 
+_state_dist = None
+
+
+def _load_state_dist():
+    """分状态(牛/熊/震荡)未来3日涨跌幅分布, 来自 backtest_rules_result.json"""
+    global _state_dist
+    if _state_dist is not None:
+        return _state_dist
+    _state_dist = {"states": {}}
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backtest_rules_result.json")
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            _state_dist = data.get("state_dist") or {"states": {}}
+    except Exception:
+        pass
+    return _state_dist
+
+
 def _calc_prob_up_3d(signals, market):
     """基于回测胜率证据的3日上涨概率估计(0-100)。
     原理：每条触发规则按其历史3日胜率偏离50%的幅度×权重贡献调整基准概率50%，
@@ -1501,6 +1521,21 @@ def _analyze_stock(symbol, days=60):
     # === 大盘上下文（指数趋势闸门） ===
     market_ctx = _get_market_context()
 
+    # === 分状态涨跌分布: 当前大盘状态 + 该状态下未来3日涨跌概率分布(回测证据) ===
+    _sd = _load_state_dist()
+    _chg20 = market_ctx.get("chg20", 0)
+    _cur_st = "bull" if _chg20 >= 5 else ("bear" if _chg20 < -5 else "normal")
+    _cur_d = (_sd.get("states") or {}).get(_cur_st)
+    market_state = {
+        "state": _cur_st,
+        "state_label": {"bull": "牛市", "normal": "震荡", "bear": "熊市"}.get(_cur_st, "震荡"),
+        "chg20": _chg20,
+        "win3": (_cur_d or {}).get("win3"),
+        "ret3": (_cur_d or {}).get("ret3"),
+        "buckets": (_cur_d or {}).get("buckets", []),
+        "bucket_labels": _sd.get("bucket_labels", []),
+    }
+
     # === 增强版仓位建议（含诊断报告/分级仓位/资金过滤） ===
     position_advice = _build_enhanced_advice(
         behavior, behavior_desc, behavior_color,
@@ -1570,6 +1605,7 @@ def _analyze_stock(symbol, days=60):
 
     return {
         "symbol": symbol, "name": name,
+        "market_state": market_state,
         "latest": cur,
         "pct_change": round((cur - data[-2]["close"]) / data[-2]["close"] * 100, 2) if len(data) > 1 else 0,
         "kline": data,
