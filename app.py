@@ -132,7 +132,10 @@ def debug():
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    resp = app.make_response(render_template("index.html"))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
 
 @app.route("/api/status")
 def status():
@@ -1291,11 +1294,11 @@ def _analyze_stock(symbol, days=60):
         if change_20d > 15 and day_change_pct < -3:
             behavior = "止盈"
             behavior_desc = "高位放量大阴线,建议止盈减仓锁定利润"
-            behavior_color = "#ef4444"
+            behavior_color = "#f87171"
         elif cur < (ma20[-1] if ma20[-1] else cur * 0.9):
             behavior = "止损"
             behavior_desc = "跌破重要支撑位,建议止损离场"
-            behavior_color = "#ef4444"
+            behavior_color = "#f87171"
         else:
             behavior = "减仓"
             behavior_desc = "出货信号较强,建议减仓控制风险"
@@ -1307,7 +1310,7 @@ def _analyze_stock(symbol, days=60):
     elif score_xipan >= 20 and score_xipan > score_xichou and score_xipan > score_chuhuo:
         behavior = "洗盘"
         behavior_desc = "主力可能正在洗盘,关注缩量企稳后的反弹机会"
-        behavior_color = "#3b82f6"
+        behavior_color = "#38bdf8"
     elif score_chuhuo >= 15 and score_chuhuo > score_xichou:
         behavior = "观望"
         behavior_desc = "存在出货迹象,建议观望等待明确方向"
@@ -1315,7 +1318,7 @@ def _analyze_stock(symbol, days=60):
     else:
         behavior = "震荡"
         behavior_desc = "当前处于震荡整理阶段,方向不明,建议观望"
-        behavior_color = "#94a3b8"
+        behavior_color = "#8ea3c4"
     print(f"[DEBUG] behavior={behavior}", flush=True)
 
     # === MACD + KDJ 联合确认 ===
@@ -1531,6 +1534,39 @@ def _analyze_stock(symbol, days=60):
     else:
         prob_label = "空头"
     position_advice.setdefault("risk_notes", []).append(f"3日上涨概率: {prob_up:.0f}% ({prob_label})")
+
+    # === 半凯利配仓: 概率优势驱动仓位(索普式: 优势大重注, 优势小轻注, 无优势不入) ===
+    if prob_up >= 65:
+        kelly_scale, kelly_note = 1.0, f"概率配仓: {prob_up:.0f}%偏多, 满配"
+    elif prob_up >= 55:
+        kelly_scale, kelly_note = 0.7, f"概率配仓: {prob_up:.0f}%温和偏多, 7成"
+    elif prob_up >= 45:
+        kelly_scale, kelly_note = 0.5, f"概率配仓: {prob_up:.0f}%中性, 5成试探"
+    elif prob_up >= 35:
+        kelly_scale, kelly_note = 0.2, f"概率配仓: {prob_up:.0f}%偏空, 2成以下"
+    else:
+        kelly_scale, kelly_note = 0.0, f"概率配仓: {prob_up:.0f}%空头, 不入场"
+    tp = position_advice.get("tiered_plan") or {}
+    if tp.get("max_total", 0) > 0 and kelly_scale < 1.0:
+        # 只对买类仓位生效; 满配时不动(上限已含资金面/大盘闸门的压制)
+        tp["kelly_scale"] = kelly_scale
+        for _k in ("tier1", "tier2", "tier3", "tier4"):
+            _t = tp.get(_k)
+            if isinstance(_t, dict) and "pct" in _t:
+                _t["pct"] = max(0, int(_t["pct"] * kelly_scale))
+        _new_max = max(0, int(tp["max_total"] * kelly_scale))
+        tp["max_total"] = _new_max
+        tp["cash_reserve"] = 100 - _new_max
+        if position_advice.get("position_pct"):
+            position_advice["position_pct"] = max(0, int(position_advice["position_pct"] * kelly_scale))
+        position_advice.setdefault("risk_notes", []).append(kelly_note)
+        # 同步'单票上限'/'现金底仓'风控文案为概率配仓后的真实值
+        for _i, _n in enumerate(position_advice["risk_notes"]):
+            if _n.startswith("单票上限:"):
+                position_advice["risk_notes"][_i] = f"单票上限: {tp['max_total']}%"
+            elif _n.startswith("现金底仓:"):
+                position_advice["risk_notes"][_i] = f"现金底仓: {tp['cash_reserve']}%"
+                break
 
     return {
         "symbol": symbol, "name": name,
@@ -2064,16 +2100,16 @@ def _get_value_stocks():
         # 投资建议
         if score >= 45:
             s["advice"] = "强烈推荐"
-            s["advice_color"] = "#ef4444"
+            s["advice_color"] = "#f87171"
         elif score >= 35:
             s["advice"] = "推荐"
             s["advice_color"] = "#f59e0b"
         elif score >= 25:
             s["advice"] = "关注"
-            s["advice_color"] = "#3b82f6"
+            s["advice_color"] = "#38bdf8"
         else:
             s["advice"] = "观望"
-            s["advice_color"] = "#94a3b8"
+            s["advice_color"] = "#8ea3c4"
 
     candidates.sort(key=lambda x: x["score"], reverse=True)
     return candidates[:15]
@@ -2207,7 +2243,7 @@ def _get_short_term_stocks():
         # 预测次日高开概率
         if score >= 55:
             s["signal"] = "强买入"
-            s["signal_color"] = "#ef4444"
+            s["signal_color"] = "#f87171"
             s["confidence"] = "高"
             s["expected_open"] = f"+{round(pct*0.3+pct*0.5, 1)}%"
         elif score >= 40:
@@ -2217,12 +2253,12 @@ def _get_short_term_stocks():
             s["expected_open"] = f"+{round(pct*0.2+pct*0.3, 1)}%"
         elif score >= 28:
             s["signal"] = "关注"
-            s["signal_color"] = "#3b82f6"
+            s["signal_color"] = "#38bdf8"
             s["confidence"] = "中低"
             s["expected_open"] = f"+{round(pct*0.1, 1)}%"
         else:
             s["signal"] = "观望"
-            s["signal_color"] = "#94a3b8"
+            s["signal_color"] = "#8ea3c4"
             s["confidence"] = "低"
             s["expected_open"] = "平开"
 
@@ -2365,7 +2401,7 @@ def _get_market_sentiment():
     # 情绪状态
     if strength >= 70:
         mood = "极度贪婪"
-        mood_color = "#ef4444"
+        mood_color = "#f87171"
         mood_emoji = "🔥"
         advice = "市场过热，注意追高风险，可适当减仓"
     elif strength >= 55:
@@ -2375,17 +2411,17 @@ def _get_market_sentiment():
         advice = "市场情绪良好，可正常操作，注意止盈"
     elif strength >= 45:
         mood = "中性"
-        mood_color = "#94a3b8"
+        mood_color = "#8ea3c4"
         mood_emoji = "😐"
         advice = "市场方向不明，建议观望为主"
     elif strength >= 30:
         mood = "恐慌"
-        mood_color = "#3b82f6"
+        mood_color = "#38bdf8"
         mood_emoji = "📉"
         advice = "市场恐慌情绪蔓延，可逢低布局优质股"
     else:
         mood = "极度恐慌"
-        mood_color = "#22c55e"
+        mood_color = "#34d399"
         mood_emoji = "😱"
         advice = "市场极度恐慌，反而是长线布局的好时机"
 
@@ -2418,33 +2454,33 @@ def _get_market_sentiment():
     total_flow = sector_inflow + concept_inflow
     if total_flow > 50e8:
         flow_mood = "大幅流入"
-        flow_color = "#ef4444"
+        flow_color = "#f87171"
     elif total_flow > 10e8:
         flow_mood = "净流入"
         flow_color = "#f59e0b"
     elif total_flow > -10e8:
         flow_mood = "平衡"
-        flow_color = "#94a3b8"
+        flow_color = "#8ea3c4"
     elif total_flow > -50e8:
         flow_mood = "净流出"
-        flow_color = "#3b82f6"
+        flow_color = "#38bdf8"
     else:
         flow_mood = "大幅流出"
-        flow_color = "#22c55e"
+        flow_color = "#34d399"
 
     # 外盘内盘比
     if outer_ratio > 55:
         buy_mood = "主动买入强势"
-        buy_color = "#ef4444"
+        buy_color = "#f87171"
     elif outer_ratio > 50:
         buy_mood = "买入略强"
         buy_color = "#f59e0b"
     elif outer_ratio > 45:
         buy_mood = "买卖平衡"
-        buy_color = "#94a3b8"
+        buy_color = "#8ea3c4"
     else:
         buy_mood = "主动卖出强势"
-        buy_color = "#22c55e"
+        buy_color = "#34d399"
 
     result["capital"] = {
         "sector_inflow": sector_inflow,
@@ -2463,11 +2499,11 @@ def _get_market_sentiment():
     if main_force_diff > 0:
         main_behavior = "主力建仓"
         main_desc = "外盘大于内盘，主力正在吸筹"
-        main_color = "#ef4444"
+        main_color = "#f87171"
     else:
         main_behavior = "主力出货"
         main_desc = "内盘大于外盘，主力正在减仓"
-        main_color = "#22c55e"
+        main_color = "#34d399"
 
     # 散户行为: 换手率高+涨幅小 = 散户换手
     avg_turnover = sum(float(line.split("=", 1)[1].strip('"').split("~")[38] or 0)
@@ -2481,25 +2517,25 @@ def _get_market_sentiment():
     elif avg_turnover > 2:
         retail_behavior = "散户正常"
         retail_desc = "换手率适中，散户参与度一般"
-        retail_color = "#94a3b8"
+        retail_color = "#8ea3c4"
     else:
         retail_behavior = "散户冷淡"
         retail_desc = "换手率低，散户观望情绪浓"
-        retail_color = "#3b82f6"
+        retail_color = "#38bdf8"
 
     # 机构行为: 成交额大+涨跌幅小 = 机构调仓
     if total_amount > 5000e8:
         inst_behavior = "机构活跃"
         inst_desc = "成交额巨大，机构资金频繁调仓"
-        inst_color = "#ef4444"
+        inst_color = "#f87171"
     elif total_amount > 2000e8:
         inst_behavior = "机构正常"
         inst_desc = "成交额适中，机构按部就班操作"
-        inst_color = "#94a3b8"
+        inst_color = "#8ea3c4"
     else:
         inst_behavior = "机构冷淡"
         inst_desc = "成交额低迷，机构资金休眠"
-        inst_color = "#3b82f6"
+        inst_color = "#38bdf8"
 
     result["behavior"] = {
         "main_force": {
@@ -2553,7 +2589,7 @@ def _get_market_sentiment():
 
     if fg_score >= 80:
         fg_level = "极度贪婪"
-        fg_color = "#ef4444"
+        fg_color = "#f87171"
         fg_desc = "市场极度乐观，谨防回调"
     elif fg_score >= 60:
         fg_level = "贪婪"
@@ -2561,15 +2597,15 @@ def _get_market_sentiment():
         fg_desc = "市场情绪偏乐观"
     elif fg_score >= 40:
         fg_level = "中性"
-        fg_color = "#94a3b8"
+        fg_color = "#8ea3c4"
         fg_desc = "市场情绪平稳"
     elif fg_score >= 20:
         fg_level = "恐慌"
-        fg_color = "#3b82f6"
+        fg_color = "#38bdf8"
         fg_desc = "市场恐慌情绪上升"
     else:
         fg_level = "极度恐慌"
-        fg_color = "#22c55e"
+        fg_color = "#34d399"
         fg_desc = "市场极度悲观，可能是底部"
 
     result["fear_greed"] = {
@@ -3016,7 +3052,7 @@ def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"
 
     if score >= 70:
         suggestion = "可以买入"
-        advice_color = "#22c55e"
+        advice_color = "#34d399"
         advice_emoji = "✅"
     elif score >= 55:
         suggestion = "谨慎买入"
@@ -3024,7 +3060,7 @@ def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"
         advice_emoji = "⚠️"
     elif score >= 45:
         suggestion = "观望"
-        advice_color = "#94a3b8"
+        advice_color = "#8ea3c4"
         advice_emoji = "⏸️"
     elif score >= 30:
         suggestion = "谨慎持有/减仓"
@@ -3032,7 +3068,7 @@ def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"
         advice_emoji = "⚠️"
     else:
         suggestion = "建议卖出"
-        advice_color = "#ef4444"
+        advice_color = "#f87171"
         advice_emoji = "🔴"
 
     return {
