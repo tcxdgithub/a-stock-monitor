@@ -987,145 +987,139 @@ function renderAnalysis(d){
     ['20日',P(a.price_change_20d),a.price_change_20d>0?'#f87171':'#34d399','近20日涨跌幅'],
     ['回撤',P(a.drawdown),'#f59e0b','近60日最大回撤'],
   ];
+  // 从最后一根K线提取今开/最高/最低/成交量
+  const lastK=d.kline&&d.kline.length?d.kline[d.kline.length-1]:{};
+  const buyLike=/加仓|建仓/.test(act.action||'');
+  // ===== 追高拦截器 =====
+  // 基准买点 = B5（用户口径：现价高于 B5 超 3% 即追高拦截）；无 B5 时退化为最低买点
+  const _b5=(d.buy_points||[]).find(p=>/^B5/.test(p.label||''))||(d.buy_points||[])[0];
+  const _baseBuy=_b5?_b5.price:null;
+  const _chaseTh=_baseBuy?_baseBuy*1.03:null;              // 追高阈值：高于B5的3%
+  const _chased=_chaseTh!==null&&(d.latest||0)>_chaseTh;   // 是否触发追高拦截
+  const _msLabel=ms.state_label||'—';
+  window._stockGuard={chased:_chased,baseBuy:_baseBuy,chaseTh:_chaseTh,latest:d.latest,ms:_msLabel,probUp:a.prob_up_3d||null};
   const html=`
   <div id="trading-decision-area"></div>
-  <!-- 一行式核心信息条 -->
-  <div style="display:flex;align-items:center;gap:0;background:#0a1526;border:1px solid #24344f;border-radius:10px;margin-bottom:10px;overflow:hidden;font-size:13px">
-    <div style="padding:10px 14px;border-right:1px solid #16233a;white-space:nowrap">
-      <span style="font-size:16px;font-weight:800;color:#f1f5f9">${d.name}</span>
-      <span style="font-size:11px;color:#6b81a5;margin-left:5px">${d.symbol}</span>
-      <button onclick="toggleWatch('${stockCode}','${d.name}')" id="wl-btn-${stockCode}" style="background:none;border:1px solid #24344f;color:#f59e0b;border-radius:4px;padding:1px 7px;font-size:11px;cursor:pointer;margin-left:8px">☆</button>
-    </div>
-    <div style="padding:10px 14px;border-right:1px solid #16233a;white-space:nowrap">
-      <span style="color:#6b81a5;font-size:11px">现价 </span><b style="color:#f1f5f9;font-size:16px">${d.latest}</b>
-      <b class="${C(d.pct_change)}" style="margin-left:6px">${P(d.pct_change)}</b>
-    </div>
-    <div style="padding:10px 14px;border-right:1px solid #16233a;white-space:nowrap" title="${(a.behavior_desc||'').replace(/"/g,'&quot;')}">
-      <span style="display:inline-block;padding:3px 14px;border-radius:14px;background:${a.behavior_color}18;border:1.5px solid ${a.behavior_color};color:${a.behavior_color};font-weight:800">${a.behavior}</span>
-    </div>
-    <div style="padding:10px 14px;border-right:1px solid #16233a;white-space:nowrap" title="基于历史回测规则胜率证据的未来3日上涨概率, 50%为中性">
-      <span style="color:#6b81a5;font-size:11px">3日概率 </span><b style="color:${pCol};font-size:16px">${a.prob_up_3d||'—'}%</b>
-      <span style="color:${pCol};font-size:11px;margin-left:4px">${a.prob_label||''}</span>
-    </div>
-    <div style="padding:10px 14px;border-right:1px solid #16233a;white-space:nowrap">
-      <span style="color:#6b81a5;font-size:11px">动作 </span><b style="color:${actCol};font-size:16px">${act.action||'—'}</b>
-      ${act.position_pct?'<b style="color:#8ea3c4;font-size:13px"> '+act.position_pct+'%</b>':''}
-      <span style="color:#6b81a5;font-size:11px;margin-left:10px">风险 </span><b style="color:${act.risk_level==='高'?'#f87171':act.risk_level==='中'?'#f59e0b':'#34d399'}">${act.risk_level||'中'}</b>
-    </div>
-    ${act.stop_loss?`<div style="padding:10px 14px;border-right:1px solid #16233a;white-space:nowrap"><span style="color:#6b81a5;font-size:11px">止损 </span><b style="color:#f87171">¥${act.stop_loss}</b></div>`:''}
-    ${act.price_suggestion?`<div style="padding:10px 14px;border-right:1px solid #16233a;white-space:nowrap"><span style="color:#6b81a5;font-size:11px">${/建仓|加仓/.test(act.action||'')?'买入':'现价'}</span><b style="color:${/建仓|加仓/.test(act.action||'')?'#34d399':'#f1f5f9'}">¥${act.price_suggestion}</b></div>`:''}
+
+  <!-- 导航条 -->
+  <div style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid #24344f;margin:0 -14px">
+    <span style="font-size:16px;font-weight:700;color:#f1f5f9">${d.name}</span>
+    <span style="font-size:12px;color:#6b81a5">${d.symbol}</span>
+    <button onclick="toggleWatch('${stockCode}','${d.name}')" id="wl-btn-${stockCode}" style="margin-left:auto;background:none;border:1px solid #24344f;color:#f59e0b;border-radius:4px;padding:2px 10px;font-size:12px;cursor:pointer">☆ 加自选</button>
   </div>
 
-  <!-- 大盘状态 + 该状态未来3日涨跌分布(回测证据) -->
-  <div style="display:flex;align-items:center;gap:10px;background:#0a1526;border:1px solid #24344f;border-radius:10px;margin-bottom:10px;padding:8px 14px;font-size:12px;flex-wrap:wrap">
-    <span style="white-space:nowrap;color:#6b81a5">大盘 <b style="color:${ms.state_label==='熊市'?'#f87171':ms.state_label==='牛市'?'#34d399':'#f59e0b'};font-size:14px">${ms.state_label||'—'}</b>
-      <span style="color:#6b81a5;margin-left:6px">20日 <b style="color:${ms.chg20>0?'#f87171':'#34d399'}">${ms.chg20!=null?P(ms.chg20):'—'}</b></span></span>
-    <span style="color:#6b81a5;white-space:nowrap">未来3日涨跌分布${ms.buckets&&ms.buckets.length?`(${ms.state_label}·回测)`:''}</span>
-    ${dist6.map(x=>`<div style="flex:1;min-width:44px">
-      <div style="font-size:10px;color:#6b81a5">${x[0]} <b style="color:${x[2]}">${x[1]}%</b></div>
-      <div style="background:#16233a;border-radius:3px;height:5px;margin-top:2px;overflow:hidden"><div style="background:${x[2]};height:100%;width:${Math.min(100,x[1]*2)}%"></div></div>
-    </div>`).join('')}
+  <!-- 价格区 -->
+  <div style="padding:16px 16px 8px">
+    <div style="display:flex;align-items:baseline;gap:10px">
+      <span style="font-size:36px;font-weight:800;letter-spacing:-1px;color:${C(d.pct_change)}">${d.latest}</span>
+      <span class="${C(d.pct_change)}" style="font-size:15px;font-weight:700;background:${C(d.pct_change)}22;padding:3px 10px;border-radius:6px">${P(d.pct_change)}</span>
+    </div>
   </div>
 
-  <!-- KPI 一行 -->
-  <div style="display:grid;grid-template-columns:repeat(8,1fr);gap:6px;margin-bottom:10px">
-    ${kpis.map(k=>`<div style="background:#0a1526;border:1px solid #16233a;border-radius:8px;padding:6px 4px;text-align:center" title="${k[3]||''}">
+  <!-- 行情基本数据 -->
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px 14px;padding:8px 16px;font-size:12px">
+    <div><div style="color:#6b81a5">今开</div><div style="color:#e2e8f0;font-weight:600;margin-top:1px">${lastK.open||'—'}</div></div>
+    <div><div style="color:#6b81a5">最高</div><div style="color:#f87171;font-weight:600;margin-top:1px">${lastK.high||'—'}</div></div>
+    <div><div style="color:#6b81a5">最低</div><div style="color:#34d399;font-weight:600;margin-top:1px">${lastK.low||'—'}</div></div>
+    <div><div style="color:#6b81a5">成交量</div><div style="color:#e2e8f0;font-weight:600;margin-top:1px">${lastK.volume?(lastK.volume>=1e4?(lastK.volume/1e4).toFixed(1)+'万手':lastK.volume):'—'}</div></div>
+  </div>
+
+  <!-- 大盘状态条（一行，hover弹规则） -->
+  <div style="position:relative;margin:10px 0;background:#16233a;border:1px solid #24344f;border-radius:10px;padding:8px 14px;display:flex;align-items:center;gap:12px;font-size:12px;cursor:help" onmouseover="this.querySelector('.ms-tip').style.opacity=1;this.querySelector('.ms-tip').style.visibility='visible'" onmouseout="this.querySelector('.ms-tip').style.opacity=0;this.querySelector('.ms-tip').style.visibility='hidden'">
+    <span>大盘 <b style="color:${ms.state_label==='熊市'?'#f87171':ms.state_label==='牛市'?'#34d399':'#f59e0b'}">${ms.state_label||'—'}</b> <span style="color:#6b81a5">20日 <b style="color:${(ms.chg20||0)>=0?'#f87171':'#34d399'}">${ms.chg20!=null?P(ms.chg20):'—'}</b></span></span>
+    <span style="color:#6b81a5">熊市反弹概率 <b style="color:#34d399">${ms.win3!=null?ms.win3.toFixed(1)+'%':'—'}</b></span>
+    <div class="ms-tip" style="position:absolute;bottom:calc(100% + 8px);left:0;width:320px;background:#0a1526;border:1px solid #24344f;border-radius:8px;padding:12px 14px;font-size:11px;line-height:1.8;color:#e2e8f0;opacity:0;visibility:hidden;transition:.15s;z-index:50;box-shadow:0 8px 24px rgba(0,0,0,.6);text-align:left">
+      <b style="color:#38bdf8">大盘状态计算规则</b><br>
+      ① 取上证指数最近20日涨跌幅（chg20）<br>
+      ② chg20 ≥ +5% → 牛市；≤ -5% → 熊市；其余 → 震荡<br>
+      ③ 当前 chg20 = ${ms.chg20!=null?ms.chg20.toFixed(2):'—'}%，判定为<b style="color:${ms.state_label==='熊市'?'#f87171':ms.state_label==='牛市'?'#34d399':'#f59e0b'}">${ms.state_label||'—'}</b><br>
+      ④ 该状态下历史窗口统计：未来3日上涨概率 <b style="color:#34d399">${ms.win3!=null?ms.win3.toFixed(1):'—'}%</b><br>
+      ⑤ 样本：14934个窗口（103只股票全量回测）
+    </div>
+  </div>
+
+  <!-- KPI 8项一行（hover解释） -->
+  <div style="display:grid;grid-template-columns:repeat(8,1fr);gap:6px;margin:10px 0">
+    ${kpis.map(k=>`<div style="position:relative;background:#16233a;border:1px solid #16233a;border-radius:8px;padding:10px 4px;text-align:center;cursor:help"
+      onmouseover="this.querySelector('.kpi-tip').style.opacity=1;this.querySelector('.kpi-tip').style.visibility='visible'"
+      onmouseout="this.querySelector('.kpi-tip').style.opacity=0;this.querySelector('.kpi-tip').style.visibility='hidden'">
       <div style="color:#6b81a5;font-size:10px">${k[0]}</div>
-      <div style="color:${k[2]};font-size:14px;font-weight:700;margin-top:1px">${k[1]}</div>
+      <div style="color:${k[2]};font-size:14px;font-weight:700;margin-top:3px">${k[1]}</div>
+      <div class="kpi-tip" style="position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);width:200px;background:#0a1526;border:1px solid #24344f;border-radius:8px;padding:10px 12px;font-size:11px;line-height:1.7;color:#e2e8f0;opacity:0;visibility:hidden;transition:.15s;z-index:50;box-shadow:0 8px 24px rgba(0,0,0,.6);font-weight:400;text-align:left">${k[3]||''}</div>
     </div>`).join('')}
   </div>
 
-  <div style="display:grid;grid-template-columns:1fr 340px;gap:10px;align-items:start">
-    <!-- 左栏：图表 -->
-    <div style="display:flex;flex-direction:column;gap:10px;min-width:0">
-      <div class="card" style="border-radius:10px;padding:8px">
-        <div class="box" id="ak-kline" style="height:430px"></div>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        <div class="card" style="border-radius:10px;padding:8px">
-          <div style="font-size:11px;color:#6b81a5;margin-bottom:2px">MACD</div>
-          <div class="box" id="ak-macd" style="height:170px"></div>
-        </div>
-        <div class="card" style="border-radius:10px;padding:8px">
-          <div style="font-size:11px;color:#6b81a5;margin-bottom:2px">KDJ</div>
-          <div class="box" id="ak-kdj" style="height:170px"></div>
-        </div>
-      </div>
+  <!-- K线 + MACD/KDJ -->
+  <div style="background:#16233a;border:1px solid #24344f;border-radius:10px;overflow:hidden;margin-bottom:10px">
+    <div style="display:flex;padding:8px 12px;border-bottom:1px solid #24344f;gap:4px">
+      <span style="padding:4px 12px;font-size:12px;color:#6b81a5;border-radius:6px;cursor:pointer">日K</span>
     </div>
+    <div class="box" id="ak-kline" style="height:300px"></div>
+    <div style="border-top:1px solid #24344f;padding:8px 12px;font-size:11px;color:#6b81a5">MACD</div>
+    <div class="box" id="ak-macd" style="height:120px"></div>
+    <div style="border-top:1px solid #24344f;padding:8px 12px;font-size:11px;color:#6b81a5">KDJ</div>
+    <div class="box" id="ak-kdj" style="height:120px"></div>
+  </div>
 
-    <!-- 右栏：信号 -->
-    <div style="display:flex;flex-direction:column;gap:8px">
-      <div style="background:#0a1526;border:1px solid #16233a;border-radius:10px;padding:10px 12px">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-          <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${actCol}"></span>
-          <span style="font-size:14px;font-weight:800;color:${actCol}">${act.action||'—'}</span>
-          ${act.position_pct?'<span style="font-size:12px;color:#8ea3c4">仓位 '+act.position_pct+'%</span>':''}
-          <span style="margin-left:auto;font-size:11px;color:#6b81a5">风险 <b style="color:${act.risk_level==='高'?'#f87171':act.risk_level==='中'?'#f59e0b':'#34d399'}">${act.risk_level||'中'}</b></span>
-        </div>
-        ${act.reason?`<div style="font-size:12px;color:#8ea3c4;line-height:1.6">${act.reason}</div>`:''}
-        <div style="display:flex;gap:12px;margin-top:6px;font-size:12px">
-          ${act.price_suggestion?`<span style="color:${/建仓|加仓/.test(act.action||'')?'#7dd3fc':'#8ea3c4'}">${/建仓|加仓/.test(act.action||'')?'买入':'现价'} ¥${act.price_suggestion}</span>`:''}
-          ${act.stop_loss?'<span style="color:#f87171">止损 ¥'+act.stop_loss+'</span>':''}
-        </div>
-      </div>
-
-      ${(()=>{
-        const sigs=(a.signals||[]).slice().sort((x,y)=>(y.weight||0)-(x.weight||0));
-        const key=sigs.filter(s=>(s.weight||0)>=20);
-        if(!key.length)return '';
-        return '<div><div style="font-size:11px;color:#f59e0b;letter-spacing:2px;margin-bottom:6px">🔥 重点信号</div>'+
-          key.map((s,i)=>{
-            const c=s.type==='吸筹'?'#16a34a':s.type==='洗盘'?'#38bdf8':s.type==='出货'?'#f59e0b':'#8ea3c4';
-            const top=i===0;
-            return '<div style="display:flex;gap:10px;align-items:flex-start;background:'+(top?'#16233a':'#0a1526')+';border:1px solid '+c+(top?'66':'2a')+';border-left:4px solid '+c+';border-radius:8px;padding:'+(top?'10px 12px':'8px 10px')+';margin-bottom:6px" title="权重'+(s.weight||0)+'分">'+
-              '<span style="flex-shrink:0;font-size:'+(top?'16px':'13px')+';font-weight:800;color:'+c+';min-width:44px">'+s.type+'</span>'+
-              '<span style="font-size:'+(top?'13px':'12px')+';color:'+(top?'#f1f5f9':'#c9d6ea')+';line-height:1.5;'+(top?'font-weight:600':'')+'">'+s.text+'</span>'+
-              '<span style="flex-shrink:0;margin-left:auto;font-size:10px;color:#5d7194;white-space:nowrap">'+(s.date||'').slice(5)+'<span style="color:'+c+';font-weight:700;margin-left:4px">★'.repeat(s.weight>=30?3:s.weight>=20?2:1)+'</span></span></div>';
-          }).join('')+'</div>';
-      })()}
-
-      <div style="background:#0a1526;border:1px solid #16233a;border-radius:10px;padding:10px 12px">
-        <div style="color:#6b81a5;font-size:11px;margin-bottom:6px">技术确认</div>
-        ${a.macd_warning?`<div style="font-size:11px;padding:6px 9px;background:#f59e0b0e;border:1px solid #f59e0b30;border-radius:6px;color:#f59e0b;margin-bottom:5px">⚠️ ${a.macd_warning}</div>`:''}
-        ${(a.signals_confirm||[]).map(s=>`<div style="font-size:11px;padding:6px 9px;background:#34d3990e;border:1px solid #34d39930;border-radius:6px;color:#34d399;margin-bottom:5px">✓ ${s}</div>`).join('')||'<div style="font-size:11px;color:#5d7194">暂无</div>'}
-        ${a.vol_anomaly?`<div style="font-size:11px;padding:6px 9px;background:#f59e0b0e;border:1px solid #f59e0b30;border-radius:6px;color:#f59e0b;margin-bottom:5px">${a.vol_anomaly}: ${a.vol_anomaly_type}</div>`:''}
-        ${a.price_divergence?`<div style="font-size:11px;padding:6px 9px;background:#f59e0b0e;border:1px solid #f59e0b30;border-radius:6px;color:#f59e0b">量价背离: ${a.price_divergence}</div>`:''}
-      </div>
-
-      <div style="background:#0a1526;border:1px solid #16233a;border-radius:10px;padding:10px 12px">
-        <div style="color:#6b81a5;font-size:11px;margin-bottom:6px">全部信号</div>
-        ${(a.signals||[]).map(s=>{
-          const c=s.type==='吸筹'?'#16a34a':s.type==='洗盘'?'#38bdf8':s.type==='出货'?'#f59e0b':'#8ea3c4';
-          const w=s.weight||0;
-          const stars=w>=30?'★★★':w>=20?'★★':w>=10?'★':'';
-          return '<div style="display:flex;gap:6px;padding:4px 0;border-bottom:1px solid #16233a;font-size:11px;color:#c9d6ea" title="权重'+w+'分'+(s.date?' · '+s.date:'')+'"><span style="flex-shrink:0;color:'+c+';font-weight:700">'+s.type+'</span><span style="line-height:1.5;flex:1">'+s.text+'</span><span style="flex-shrink:0;color:'+c+';font-size:9px;letter-spacing:-1px">'+stars+'</span></div>';
-        }).join('')||'<div style="color:#5d7194;font-size:11px">暂无</div>'}
-      </div>
-
-      <!-- 折叠（默认展开） -->
-      <details open style="background:#0a1526;border:1px solid #16233a;border-radius:10px;padding:8px 12px">
-        <summary style="cursor:pointer;font-size:12px;color:#c9d6ea;font-weight:600">📊 分级仓位</summary>
-        <div id="tier-plan" style="margin-top:6px;font-size:12px"></div>
-      </details>
-      <details open style="background:#0a1526;border:1px solid #16233a;border-radius:10px;padding:8px 12px">
-        <summary style="cursor:pointer;font-size:12px;color:#c9d6ea;font-weight:600">🎯 买卖点位</summary>
-        <div style="margin-top:6px;font-size:12px">
-          <div style="color:#f87171;font-weight:700;padding:3px 0">卖出参考</div>
-          ${(d.sell_points||[]).map(p=>'<div style="display:flex;justify-content:space-between;padding:2px 0"><span style="color:#c9d6ea;font-size:11px">'+p.label+'</span><span style="color:#f87171;font-weight:700">'+p.price+'</span></div>').join('')}
-          <div style="color:#34d399;font-weight:700;padding:6px 0 3px">买入参考</div>
-          ${(d.buy_points||[]).map(p=>'<div style="display:flex;justify-content:space-between;padding:2px 0"><span style="color:#c9d6ea;font-size:11px">'+p.label+'</span><span style="color:#34d399;font-weight:700">'+p.price+'</span></div>').join('')}
-        </div>
-      </details>
-      <details open style="background:#0a1526;border:1px solid #16233a;border-radius:10px;padding:8px 12px">
-        <summary style="cursor:pointer;font-size:12px;color:#c9d6ea;font-weight:600">📈 量价信号</summary>
-        <div style="margin-top:6px;font-size:11px">
-          ${(a.vp_signals||[]).map(v=>{
-            const c=v.type.includes('涨')?'#f87171':v.type.includes('跌')?'#34d399':'#8ea3c4';
-            return '<div style="padding:2px 0;color:#c9d6ea"><span style="color:#5d7194">'+v.date+'</span> <span style="color:'+c+'">'+v.type+'</span> '+v.note+'</div>';
-          }).join('')||'<div style="color:#5d7194">暂无</div>'}
-        </div>
-      </details>
+  <!-- 结论横幅 -->
+  <div style="background:linear-gradient(135deg,#f59e0b22,#f59e0b11);border:1px solid #f59e0b55;border-radius:12px;padding:14px 16px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px">
+    <span style="font-size:11px;padding:3px 10px;border-radius:6px;background:${a.behavior_color}22;color:${a.behavior_color};font-weight:700">行为：${a.behavior||'—'}</span>
+    <div>
+      <div style="font-size:18px;font-weight:800;color:${actCol}">${act.action||'—'}${act.position_pct?' · 仓位 '+act.position_pct+'%':''}</div>
+      <div style="font-size:12px;color:#6b81a5;margin-top:2px">${act.reason||''} · 风险：${act.risk_level||'中'}</div>
     </div>
+    <div style="margin-left:auto;display:flex;gap:18px;text-align:right">
+      <div><div style="font-size:11px;color:#6b81a5">${buyLike?'参考买入价':'参考卖出价'}</div><div style="font-size:14px;font-weight:700;color:#e2e8f0">¥${act.price_suggestion||d.latest}</div></div>
+      <div><div style="font-size:11px;color:#6b81a5">个股3日上涨概率</div><div style="font-size:14px;font-weight:700;color:${pCol}">${a.prob_up_3d||'—'}%</div></div>
+      <div><div style="font-size:11px;color:#6b81a5">止损位</div><div style="font-size:14px;font-weight:700;color:#f87171">¥${act.stop_loss||'—'}</div></div>
+    </div>
+  </div>
+
+  <!-- 信号与技术 -->
+  <div style="margin:16px 0 8px;font-size:12px;color:#6b81a5;letter-spacing:1px">▎信号与技术</div>
+  <div style="background:#16233a;border:1px solid #16233a;border-radius:10px;padding:14px;margin-bottom:10px">
+    ${(a.signals||[]).slice().sort((x,y)=>(y.weight||0)-(x.weight||0)).map(s=>{
+      const c=s.type==='吸筹'?'#16a34a':s.type==='洗盘'?'#38bdf8':s.type==='出货'?'#f59e0b':'#8ea3c4';
+      return `<div style="display:flex;gap:10px;padding:10px 0;border-bottom:1px solid #24344f;font-size:13px;align-items:flex-start">
+        <span style="flex-shrink:0;font-size:11px;font-weight:700;padding:2px 8px;border-radius:4px;background:${c}22;color:${c}">${s.type} ${s.weight||0}</span>
+        <span style="line-height:1.5">${s.text}</span>
+      </div>`;
+    }).join('')||'<div style="color:#5d7194;font-size:12px">暂无信号</div>'}
+    ${a.macd_warning?`<div style="font-size:12px;padding:8px 10px;border-radius:6px;margin-top:8px;background:#f59e0b18;color:#f59e0b;border-left:3px solid #f59e0b">⚠ ${a.macd_warning}</div>`:''}
+    ${(a.signals_confirm||[]).map(s=>`<div style="font-size:12px;padding:8px 10px;border-radius:6px;margin-top:6px;background:#34d39918;color:#34d399;border-left:3px solid #34d399">✓ ${s}</div>`).join('')}
+    ${a.vol_anomaly?`<div style="font-size:12px;padding:8px 10px;border-radius:6px;margin-top:6px;background:#f59e0b18;color:#f59e0b;border-left:3px solid #f59e0b">${a.vol_anomaly}: ${a.vol_anomaly_type}</div>`:''}
+    ${a.price_divergence?`<div style="font-size:12px;padding:8px 10px;border-radius:6px;margin-top:6px;background:#f59e0b18;color:#f59e0b;border-left:3px solid #f59e0b">量价背离: ${a.price_divergence}</div>`:''}
+  </div>
+
+  <!-- 仓位计划 -->
+  <div style="margin:16px 0 8px;font-size:12px;color:#6b81a5;letter-spacing:1px">▎仓位计划</div>
+  <div style="background:#16233a;border:1px solid #16233a;border-radius:10px;padding:14px;margin-bottom:10px">
+    <div id="tier-plan"></div>
+  </div>
+
+  <!-- 买卖点位 -->
+  <div style="margin:16px 0 8px;font-size:12px;color:#6b81a5;letter-spacing:1px">▎买卖点位</div>
+  <div style="background:#16233a;border:1px solid #16233a;border-radius:10px;padding:14px;margin-bottom:10px">
+    ${_chased?`<div style="font-size:12px;padding:9px 11px;border-radius:6px;margin-bottom:10px;background:#f8717118;color:#f87171;border:1px solid #f8717155;font-weight:600">🚫 追高拦截：现价 ¥${d.latest} 已高于买点 ${_b5.label}（¥${_baseBuy}）的 +3% 警戒线（¥${_chaseTh.toFixed(2)}）。纪律：不追高，等回踩买点。</div>`:''}
+    <div style="font-size:10px;color:#5d7194;margin-bottom:6px">卖点=反弹到此处减仓；买点=回踩到此处低吸。标"已跌破"的买点失效，标"已破位"的卖点作废</div>
+    <div style="color:#5d7194;font-size:10px;margin-bottom:4px">▼ 卖点（现价上方，反弹减仓）</div>
+    ${(d.sell_points||[]).slice().sort((a,b)=>a.price-b.price).map(p=>{
+      const dist=((p.price-d.latest)/d.latest*100).toFixed(1);
+      return '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #24344f;font-size:13px"><div style="flex:1"><span style="color:#f87171;font-weight:600">'+p.label+'</span><div style="color:#5d7194;font-size:10px">'+(p.reason||'')+'</div></div><div style="text-align:right;flex-shrink:0"><div style="color:#e2e8f0;font-weight:600">¥'+p.price+'</div><div style="color:'+(dist>=0?'#f87171':'#5d7194')+';font-size:10px">现价'+(dist>=0?'+':'')+dist+'%</div></div></div>';
+    }).join('')}
+    <div style="color:#5d7194;font-size:10px;margin:6px 0 4px">▼ 买点（回踩低吸，现价下方才有效）</div>
+    ${(d.buy_points||[]).slice().sort((a,b)=>b.price-a.price).map(p=>{
+      const dist=((p.price-d.latest)/d.latest*100).toFixed(1);
+      const dead=p.price>d.latest;
+      return '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #24344f;font-size:13px"><div style="flex:1"><span style="color:'+(dead?'#5d7194':'#34d399')+';font-weight:600">'+p.label+(dead?'<span style="color:#f59e0b;font-size:10px;margin-left:6px">已跌破·作废</span>':'')+'</div><div style="color:#5d7194;font-size:10px">'+(p.reason||'')+'</div></div><div style="text-align:right;flex-shrink:0"><div style="color:'+(dead?'#5d7194':'#34d399')+';font-weight:600">¥'+p.price+'</div><div style="color:'+(dead?'#5d7194':dist>=0?'#f87171':'#34d399')+';font-size:10px">现价'+(dist>=0?'+':'')+dist+'%</div></div></div>';
+    }).join('')}
+  </div>
+
+  <!-- 量价明细 -->
+  <div style="margin:16px 0 8px;font-size:12px;color:#6b81a5;letter-spacing:1px">▎量价明细</div>
+  <div style="background:#16233a;border:1px solid #16233a;border-radius:10px;padding:14px;margin-bottom:10px">
+    <div style="font-size:10px;color:#5d7194;margin-bottom:6px">近5日量价组合：价涨量缩=缩量上涨（控盘），价跌量增=放量下跌（出货）</div>
+    ${(a.vp_signals||[]).slice().reverse().map(v=>`<div style="display:flex;gap:8px;padding:4px 0;font-size:12px;color:#c9d6ea"><span style="color:#5d7194;flex-shrink:0">${v.date}</span><span style="color:${v.type&&v.type.includes('涨')?'#f87171':v.type&&v.type.includes('跌')?'#34d399':'#8ea3c4'}">${v.type}</span><span>${v.note}</span></div>`).join('')||'<div style="color:#5d7194;font-size:12px">暂无</div>'}
   </div>`;
   document.getElementById('ares').innerHTML=html;
 
@@ -1137,21 +1131,38 @@ function renderAnalysis(d){
   const tpEl=document.getElementById('tier-plan');
   if(tpEl){
     let h='';
-    if(tp.tiers){
-      h+='<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px">'+tp.tiers.map((t,i)=>{
+    // API 返回 tier1/tier2/tier3 对象，不是数组
+    const tiers=[tp.tier1,tp.tier2,tp.tier3].filter(Boolean);
+    if(tiers.length){
+      h+='<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px">'+tiers.map((t,i)=>{
         const tc=['#34d399','#7dd3fc','#f59e0b','#f87171'][i]||'#8ea3c4';
-        return '<div style="background:#0a1526;border-left:3px solid '+tc+';border-radius:6px;padding:6px 8px"><div style="color:'+tc+';font-weight:700;font-size:11px">Tier'+(i+1)+' · '+(t.name||t.label||'')+'</div><div style="color:#8ea3c4;font-size:10px;margin-top:2px">仓位 '+(t.pct||t.position_pct||0)+'%</div><div style="color:#6b81a5;font-size:10px">'+(t.condition||t.reason||'')+'</div></div>';
+        const pct=t.pct||t.position_pct||0;
+        const pctTxt=pct<0?('卖出 '+Math.abs(pct)+'%'):('仓位 '+pct+'%');
+        return '<div style="background:#0a1526;border-left:3px solid '+tc+';border-radius:6px;padding:6px 8px"><div style="color:'+tc+';font-weight:700;font-size:11px">Tier'+(i+1)+' · '+(t.name||t.label||'')+'</div><div style="color:'+(pct<0?'#f87171':'#8ea3c4')+';font-size:10px;margin-top:2px">'+pctTxt+'</div><div style="color:#6b81a5;font-size:10px">'+(t.trigger||t.condition||t.reason||'')+'</div></div>';
       }).join('')+'</div>';
-      h+='<div style="display:flex;gap:12px;margin-top:8px;font-size:11px"><span style="color:#f87171">单票上限 '+tp.max_total+'%</span><span style="color:#7dd3fc">现金底仓 '+tp.cash_reserve+'%</span></div>';
+      h+='<div style="display:flex;gap:12px;margin-top:8px;font-size:11px"><span style="color:#f87171">目标仓位 '+tp.max_total+'%'+(tp.max_total<0?'（清仓）':'')+'</span><span style="color:#7dd3fc">现金底仓 '+tp.cash_reserve+'%</span></div>';
     }
     if(Object.keys(kp).length){
-      h+='<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:11px">'+Object.entries(kp).map(([k,v])=>'<span style="background:#16233a;padding:3px 8px;border-radius:6px;color:#c9d6ea">'+k+' <b style="color:#f59e0b">¥'+v+'</b></span>').join('')+'</div>';
+      h+='<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:11px">'+Object.entries(kp).map(([k,v])=>{
+        // key_prices 可能是嵌套对象(如 支撑位:{MA20:4.18}) 或 null
+        let val='—';
+        if(v!==null&&v!==undefined&&typeof v==='object'){
+          val=Object.entries(v).map(([kk,vv])=>vv!==null&&vv!==undefined?kk+' '+vv:'').filter(Boolean).join(' / ');
+        }else if(v!==null&&v!==undefined){
+          val=v;
+        }
+        return val?'<span style="background:#16233a;padding:3px 8px;border-radius:6px;color:#c9d6ea">'+k+' <b style="color:#f59e0b">'+val+'</b></span>':'';
+      }).join('')+'</div>';
     }
     if(cf && cf.reason){
       h+='<div style="margin-top:8px;font-size:11px;padding:5px 8px;border-radius:6px;background:'+(cf.through?'#34d39911':'#f8717111')+';border-left:3px solid '+(cf.through?'#34d399':'#f87171')+';color:'+(cf.through?'#34d399':'#f87171')+'">资金面'+(cf.through?'通过':'不通过')+' ('+cf.score+'分): '+cf.reason+'</div>';
     }
     if(ep.risk_notes && ep.risk_notes.length){
-      h+='<div style="margin-top:8px;font-size:10px;color:#6b81a5;line-height:1.6">'+ep.risk_notes.map(n=>'• '+n).join('<br>')+'</div>';
+      // 去重: 单票上限/现金底仓 已在分级卡片下方展示, risk_notes 里剔除
+      const dedup=ep.risk_notes.filter(n=>!n.startsWith('单票上限:')&&!n.startsWith('现金底仓:'));
+      if(dedup.length){
+        h+='<div style="margin-top:8px;font-size:10px;color:#6b81a5;line-height:1.6">'+dedup.map(n=>'• '+n).join('<br>')+'</div>';
+      }
     }
     tpEl.innerHTML=h||'<div style="color:#5d7194">暂无分级数据</div>';
   }
@@ -1338,8 +1349,11 @@ function renderTradingDecision(d,code){
   const posHtml=pos?
     `<span style="color:#f87171">持仓中（成本 ${pos.cost}，数量 ${pos.qty}，${pos.date}买入）</span>
      <button onclick="clearPosition('${code}')" style="margin-left:8px;padding:2px 8px;background:#f87171;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer">清仓</button>`:
-    `<span style="color:#6b81a5">空仓</span>
-     <button onclick="openPositionModal('${code}','${d.name}',${d.latest})" style="margin-left:8px;padding:2px 8px;background:#34d399;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer">记录持仓</button>`;
+    (window._stockGuard&&window._stockGuard.chased?
+      `<span style="color:#f87171;font-weight:700">🚫 追高拦截中（现价超买点+3%），禁止记录</span>
+       <span style="display:inline-block;margin-left:8px;padding:2px 8px;background:#f8717122;color:#f87171;border:1px solid #f8717155;border-radius:4px;font-size:11px">等回踩 ¥${(window._stockGuard.baseBuy||0).toFixed(2)}</span>`:
+      `<span style="color:#6b81a5">空仓</span>
+       <button onclick="openPositionGuard('${code}','${d.name}',${d.latest})" style="margin-left:8px;padding:2px 8px;background:#34d399;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer">记录持仓</button>`);
 
   el.innerHTML=`
   <div style="background:#16233a;border-radius:8px;padding:12px;margin-bottom:10px;border:1px solid #24344f">
@@ -1383,19 +1397,40 @@ function renderTradingDecision(d,code){
   </div>`;
 }
 
-/* 持仓管理 */
-function openPositionModal(code,name,price){
+/* 持仓管理：强制清单守卫版 */
+function openPositionGuard(code,name,price){
+  const g=window._stockGuard||{};
   const html=`
   <div class="modal-overlay" id="pos-modal" onclick="if(event.target===this)this.remove()">
-    <div class="modal">
+    <div class="modal" style="max-width:440px">
       <h3>记录持仓 - ${name}</h3>
+      ${g.chased?`<div style="font-size:12px;padding:8px 12px;background:#f8717118;border:1px solid #f8717155;border-radius:6px;margin-bottom:10px;color:#f87171;line-height:1.6">⚠ 现价 ¥${price} 已高于买点 B5（¥${(g.baseBuy||0).toFixed(2)}）+3% 警戒线。新建买入会被拦截，已有持仓登记不受影响。</div>`:''}
+      ${g.ms==='熊市'?`<div style="font-size:12px;padding:8px 12px;background:#f59e0b18;border:1px solid #f59e0b55;border-radius:6px;margin-bottom:10px;color:#f59e0b;line-height:1.6">⚠ 当前大盘为熊市。新建买入会被拦截，已有持仓登记不受影响。</div>`:''}
+      <div style="font-size:11px;line-height:1.8;padding:8px 12px;background:#16233a;border:1px solid #24344f;border-radius:6px;margin-bottom:4px;color:#8ea3c4">
+        大盘：<b style="color:${g.ms==='熊市'?'#f87171':g.ms==='牛市'?'#34d399':'#f59e0b'}">${g.ms}</b> ｜ 3日上涨概率：<b style="color:#e2e8f0">${g.probUp!=null?g.probUp+'%':'—'}</b> ｜ 现价 <b style="color:#e2e8f0">¥${price}</b> ｜ 买点B5 <b style="color:#34d399">¥${(g.baseBuy||0).toFixed(2)}</b>（偏离 ${g.baseBuy?((price-g.baseBuy)/g.baseBuy*100).toFixed(1):'—'}%）
+      </div>
       <div class="modal-item">
-        <label>成本价</label>
-        <input id="pos-cost" type="number" step="0.01" value="${price}" style="width:100px;padding:6px;border:1px solid #24344f;border-radius:4px;background:#0a1526;color:#e2e8f0">
+        <label>操作类型</label>
+        <select id="pos-mode" style="width:230px;padding:6px 10px;border:1px solid #24344f;border-radius:4px;background:#0a1526;color:#e2e8f0;font-size:13px">
+          <option value="existing" selected>已有持仓登记（录入跟踪）</option>
+          <option value="new">新建买入（开新仓）</option>
+        </select>
+      </div>
+      <div class="modal-item">
+        <label>买入理由 <span style="color:#6b81a5;font-size:11px">(必填，禁情绪词)</span></label>
+        <input id="pos-reason" type="text" placeholder="例：回踩B3支撑/缩量止跌" style="width:230px;padding:6px;border:1px solid #24344f;border-radius:4px;background:#0a1526;color:#e2e8f0">
+      </div>
+      <div class="modal-item">
+        <label>止损位 <span style="color:#6b81a5;font-size:11px">(必填，低于成本)</span></label>
+        <input id="pos-stop" type="number" step="0.01" placeholder="例：${price<4?'3.8':'4.0'}" style="width:230px;padding:6px;border:1px solid #24344f;border-radius:4px;background:#0a1526;color:#e2e8f0">
+      </div>
+      <div class="modal-item">
+        <label>成本价 <span style="color:#6b81a5;font-size:11px">(实际成本)</span></label>
+        <input id="pos-cost" type="number" step="0.01" value="${price}" style="width:230px;padding:6px;border:1px solid #24344f;border-radius:4px;background:#0a1526;color:#e2e8f0">
       </div>
       <div class="modal-item">
         <label>数量（股）</label>
-        <input id="pos-qty" type="number" step="100" value="100" style="width:100px;padding:6px;border:1px solid #24344f;border-radius:4px;background:#0a1526;color:#e2e8f0">
+        <input id="pos-qty" type="number" step="100" value="100" style="width:230px;padding:6px;border:1px solid #24344f;border-radius:4px;background:#0a1526;color:#e2e8f0">
       </div>
       <div class="modal-btns">
         <button class="btn-cancel" onclick="document.getElementById('pos-modal').remove()">取消</button>
@@ -1409,9 +1444,34 @@ function openPositionModal(code,name,price){
 function savePosition(code){
   const cost=parseFloat(document.getElementById('pos-cost').value);
   const qty=parseInt(document.getElementById('pos-qty').value);
+  const reason=(document.getElementById('pos-reason').value||'').trim();
+  const stop=parseFloat(document.getElementById('pos-stop').value);
+  const mode=document.getElementById('pos-mode').value;
   if(!cost||!qty){alert('请输入有效数值');return}
+  // 新建买入：硬拦截 追高 + 熊市
+  if(mode==='new'){
+    const g=window._stockGuard||{};
+    if(g.chased){
+      alert(`🚫 追高拦截：现价 ¥${cost} 已高于买点 B5（¥${(g.baseBuy||0).toFixed(2)}）的 +3% 警戒线。纪律：不追高，等回踩买点。`);
+      return;
+    }
+    if(g.ms==='熊市'){
+      alert(`🚫 熊市禁建仓：当前大盘状态为熊市。纪律：熊市不建仓，空仓等信号。`);
+      return;
+    }
+  }
+  // 情绪词校验（已有持仓登记也查，理由必须写实）
+  const emotionWords=['感觉','觉得','消息','利好','涨停','追','梭哈','赌','抄底','反弹','必涨','赌一把','干','冲','看多','牛'];
+  const hit=emotionWords.filter(w=>reason.includes(w));
+  if(hit.length){
+    alert(`🚫 情绪词拦截：理由包含「${hit.join('、')}」。这不是依据，是冲动。请重写：明确是哪个买点、什么形态触发。`);
+    return;
+  }
+  if(!stop){alert('必填止损位');return}
+  if(stop>=cost){alert('止损位必须低于成本价');return}
+  if(!reason){alert('必填买入理由');return}
   const positions=JSON.parse(localStorage.getItem('positions')||'{}');
-  positions[code]={cost,qty,date:new Date().toISOString().slice(0,10)};
+  positions[code]={cost,qty,date:new Date().toISOString().slice(0,10),reason,stop_loss:stop,mode};
   localStorage.setItem('positions',JSON.stringify(positions));
   document.getElementById('pos-modal').remove();
   // 刷新交易决策

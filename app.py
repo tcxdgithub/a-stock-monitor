@@ -838,7 +838,7 @@ def _build_enhanced_advice(
             f"单票上限: {plan['max_total']}%",
             f"现金底仓: {plan['cash_reserve']}%",
             f"资金面: {'通过' if capital_ok else '不通过'} ({capital_score}分)",
-            f"大盘: {market_note or ('正常' if market and not market.get('bear') else '未知')}",
+            f"大盘: {market_note or ('熊市' if market and market.get('bear') else ('正常' if market and not market.get('bear') else '未知'))}",
             f"止损纪律: 破位不补仓，止损不移动",
         ],
         
@@ -1137,12 +1137,17 @@ def _analyze_stock(symbol, days=60):
         prev, cur_d = data[i - 1], data[i]
         price_up = cur_d["close"] > prev["close"]
         vol_up = cur_d["volume"] > prev["volume"]
+        chg = (cur_d["close"] - prev["close"]) / prev["close"] * 100 if prev["close"] else 0
         if price_up and not vol_up:
             vp_signals.append({"date": cur_d["date"], "type": "缩量上涨", "note": "主力控盘,散户惜售"})
         elif not price_up and vol_up:
             vp_signals.append({"date": cur_d["date"], "type": "放量下跌", "note": "恐慌盘涌出或主力出货"})
         elif price_up and vol_up:
             vp_signals.append({"date": cur_d["date"], "type": "放量上涨", "note": "资金积极介入"})
+        elif chg <= -5:
+            vp_signals.append({"date": cur_d["date"], "type": "缩量重挫", "note": f"大跌{abs(chg):.1f}%,弱势无承接"})
+        elif chg <= -2:
+            vp_signals.append({"date": cur_d["date"], "type": "缩量阴跌", "note": f"跌{abs(chg):.1f}%,抛压未释放"})
         else:
             vp_signals.append({"date": cur_d["date"], "type": "缩量调整", "note": "正常回调,抛压减弱"})
 

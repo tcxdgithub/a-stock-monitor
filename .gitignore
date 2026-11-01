@@ -8,3 +8,15 @@ test_*.json
 *.log
 server_*.txt
 short_history/
+
+# test artifacts & temp snapshots
+behavior_cache/
+check_hist.py
+*dzjt*.json
+hist_check.json
+hot_test.json
+scan*.json
+seesaw*.json
+sina_*.json
+watchlist.json
+yinxian_*.json
