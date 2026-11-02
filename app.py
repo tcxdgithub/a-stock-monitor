@@ -984,6 +984,23 @@ def _analyze_stock(symbol, days=60):
     latest = data[-1]
     cur = latest["close"]
 
+    # === 盘中实时价修正：日K最后一根在盘中可能滞后（昨收/未更新），
+    #     用腾讯实时接口覆盖最新价与涨跌幅；拿不到实时则回退日K，绝不影响指标计算 ===
+    _rt_pct_override = None
+    try:
+        _rt = _get_realtime_batch([symbol])
+        if _rt:
+            _r = _rt[0]
+            if _r.get("price") and _r["price"] > 0:
+                cur = _r["price"]
+                latest = {**latest, "close": cur, "open": _r.get("open") or latest["open"],
+                          "high": _r.get("high") or latest["high"], "low": _r.get("low") or latest["low"]}
+                data[-1] = latest
+                closes[-1] = cur
+                _rt_pct_override = _r.get("pct_change")
+    except Exception:
+        pass
+
     # === 核心指标计算 ===
     # 最大回撤
     peak = max(highs)
@@ -1612,7 +1629,7 @@ def _analyze_stock(symbol, days=60):
         "symbol": symbol, "name": name,
         "market_state": market_state,
         "latest": cur,
-        "pct_change": round((cur - data[-2]["close"]) / data[-2]["close"] * 100, 2) if len(data) > 1 else 0,
+        "pct_change": _rt_pct_override if _rt_pct_override is not None else (round((cur - data[-2]["close"]) / data[-2]["close"] * 100, 2) if len(data) > 1 else 0),
         "kline": data,
         "ma5": [round(v, 2) if v else None for v in ma5],
         "ma10": [round(v, 2) if v else None for v in ma10],
