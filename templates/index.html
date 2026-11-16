@@ -60,6 +60,7 @@ details summary{outline:none}
 <button class="on" data-t="sector">行业板块</button>
 <button data-t="concept">概念板块</button>
 <button data-t="stock">热门个股</button>
+<button data-t="pool" style="color:#34d399">选股池</button>
 <button data-t="sentiment" style="color:#a855f7">市场情绪</button>
 <button data-t="value" style="color:#f59e0b">低位埋伏</button>
 <button data-t="short" style="color:#f87171">短线交易</button>
@@ -80,6 +81,7 @@ details summary{outline:none}
 <div id="p-etf" style="display:none;padding:0 14px 14px"></div>
 <div id="p-analyze" style="display:none;padding:0 14px 14px"></div>
 <div id="p-history" style="display:none;padding:0 14px 14px"></div>
+<div id="p-pool" style="display:none;padding:0 14px 14px"></div>
 
 <button class="refresh-btn" onclick="location.reload()" title="刷新">&#x21bb;</button>
 <button class="config-btn" onclick="openConfig()" title="配置模块">⚙</button>
@@ -90,6 +92,7 @@ details summary{outline:none}
   <div class="modal-item"><label for="cfg-sector">行业板块</label><input type="checkbox" id="cfg-sector" data-m="sector" checked></div>
   <div class="modal-item"><label for="cfg-concept">概念板块</label><input type="checkbox" id="cfg-concept" data-m="concept" checked></div>
   <div class="modal-item"><label for="cfg-stock">热门个股</label><input type="checkbox" id="cfg-stock" data-m="stock" checked></div>
+  <div class="modal-item"><label for="cfg-pool">选股池</label><input type="checkbox" id="cfg-pool" data-m="pool" checked></div>
   <div class="modal-item"><label for="cfg-sentiment">市场情绪</label><input type="checkbox" id="cfg-sentiment" data-m="sentiment" checked></div>
   <div class="modal-item"><label for="cfg-value">低位埋伏</label><input type="checkbox" id="cfg-value" data-m="value" checked></div>
   <div class="modal-item"><label for="cfg-short">短线交易</label><input type="checkbox" id="cfg-short" data-m="short" checked></div>
@@ -122,8 +125,8 @@ details summary{outline:none}
 </div>
 
 <script>
-const ALL_MODULES=['sector','concept','stock','sentiment','value','short','etf','analyze','history'];
-const MODULE_NAMES={sector:'行业板块',concept:'概念板块',stock:'热门个股',sentiment:'市场情绪',value:'低位埋伏',short:'短线交易',analyze:'个股分析',history:'历史记录'};
+const ALL_MODULES=['sector','concept','stock','pool','sentiment','value','short','etf','analyze','history'];
+const MODULE_NAMES={sector:'行业板块',concept:'概念板块',stock:'热门个股',pool:'选股池',sentiment:'市场情绪',value:'低位埋伏',short:'短线交易',analyze:'个股分析',history:'历史记录'};
 const F=v=>{if(v==null||isNaN(v))return'--';let a=Math.abs(v);if(a>=1e12)return(v/1e12).toFixed(2)+'万亿';if(a>=1e8)return(v/1e8).toFixed(2)+'亿';if(a>=1e4)return(v/1e4).toFixed(2)+'万';return v.toFixed(2)};
 const P=v=>v==null?'--':v.toFixed(2)+'%';
 const C=v=>v>=0?'cup':'cdn';
@@ -170,7 +173,7 @@ document.getElementById('tabs').onclick=e=>{
   document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('on'));
   e.target.classList.add('on');
   const t=e.target.dataset.t;currentTab=t;
-  ['sector','concept','stock','sentiment','value','short','etf','analyze','history'].forEach(n=>{
+  ['sector','concept','stock','pool','sentiment','value','short','etf','analyze','history'].forEach(n=>{
     const el=document.getElementById('p-'+n);
     if(el)el.style.display=n===t?'':'none';
     const pred=document.getElementById('p-predict-'+n);
@@ -1697,6 +1700,65 @@ async function loadSuccessRate(){
   }
   document.getElementById('ld').innerHTML='<p style="color:#f87171">超时,刷新重试</p>';
 })();
+
+/* ===== 选股池 ===== */
+let poolData=null, poolFilter='buy';
+const DEC_STYLE=d=>{
+  if(d===7)return'background:#064e3b;color:#34d399;font-weight:700';
+  if(d===6||d===8)return'background:#16302a;color:#86efac';
+  if(d<=3)return'background:#3f1d1d;color:#f87171';
+  if(d>=9)return'background:#1e293b;color:#64748b';
+  return'background:#182335;color:#94a3b8';
+};
+function load_pool(){
+  const el=document.getElementById('p-pool');
+  el.innerHTML='<div style="text-align:center;color:#6b81a5;padding:40px">正在加载选股名单...</div>';
+  fetch('/api/pool_screen').then(r=>r.json()).then(j=>{
+    if(j.code!==0){el.innerHTML=`<div style="color:#f87171;padding:30px;text-align:center">${j.msg}</div>`;return}
+    poolData=j.data;renderPool();
+  }).catch(()=>{el.innerHTML='<div style="color:#f87171;padding:30px;text-align:center">加载失败</div>'});
+}
+function setPoolFilter(f){poolFilter=f;renderPool()}
+function refreshPool(){
+  fetch('/api/pool_refresh',{method:'POST'}).then(r=>r.json()).then(j=>{
+    alert(j.msg||'已提交');
+    setTimeout(()=>{if(window.load_pool)load_pool()},90000);
+  }).catch(()=>alert('提交失败'));
+}
+function renderPool(){
+  const el=document.getElementById('p-pool'),d=poolData;
+  const items=d.items.filter(it=>poolFilter==='best'?it.decile===7:poolFilter==='buy'?(it.decile>=6&&it.decile<=8):true);
+  const fb=(k,l)=>`<button onclick="setPoolFilter('${k}')" style="padding:5px 14px;border-radius:6px;font-size:12px;cursor:pointer;border:1px solid ${poolFilter===k?'#34d399':'#24344f'};background:${poolFilter===k?'#064e3b':'#111d33'};color:${poolFilter===k?'#34d399':'#8ea3c4'}">${l}</button>`;
+  let h=`<div class="card" style="min-height:auto;margin-bottom:10px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+      <div>
+        <div style="font-size:15px;font-weight:700;color:#e2e8f0">中盘选股池</div>
+        <div style="font-size:11px;color:#6b81a5;margin-top:3px">${d.trade_date} · 全池 ${d.total} 只 · 六因子复合 · 建议持有 30 日</div>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center">${fb('best','最优 D7')}${fb('buy','可买 D6-D8')}${fb('all','全部')}
+      <button onclick="refreshPool()" style="padding:5px 12px;border-radius:6px;font-size:12px;cursor:pointer;border:1px solid #24344f;background:#111d33;color:#8ea3c4">更新</button></div>
+    </div>
+    <div style="font-size:11px;color:#6b81a5;margin-top:8px;line-height:1.7">
+      D7 历史 30 日超额 <span style="color:#34d399">+0.54%</span>（扣成本 +0.29%）· D1-D3 回避区 30 日 <span style="color:#f87171">-2.33%</span>
+      <br>十分档单调，D7 为顶点，D9-D10 透支 · 名单是概率排序，不是每只都赚
+    </div>
+  </div>
+  <div class="card" style="min-height:auto"><div class="tbl" style="max-height:620px"><table>
+  <tr><th style="text-align:left;width:28%">名称</th><th style="width:12%">价格</th><th style="width:12%">涨跌</th><th style="width:13%">成交额</th><th style="width:12%">换手</th><th style="width:13%">20日</th><th style="width:10%;text-align:center">档位</th></tr>`;
+  items.slice(0,120).forEach(it=>{
+    h+=`<tr>
+    <td style="text-align:left;color:#cfe6ff">${it.name}<span style="color:#4a5c78;font-size:10px;margin-left:4px">${it.code.slice(2)}</span></td>
+    <td style="color:#e2e8f0">${it.close.toFixed(2)}</td>
+    <td class="${C(it.pct)}">${it.pct>0?'+':''}${it.pct.toFixed(2)}%</td>
+    <td style="color:#8ea3c4">${it.amt_yi.toFixed(1)}亿</td>
+    <td style="color:#8ea3c4">${it.turnover.toFixed(2)}%</td>
+    <td class="${C(-it.chg20)}">${it.chg20>0?'+':''}${it.chg20.toFixed(1)}%</td>
+    <td><span style="padding:2px 8px;border-radius:4px;font-size:11px;${DEC_STYLE(it.decile)}">D${it.decile}</span></td></tr>`;
+  });
+  h+='</table></div></div>';
+  if(items.length>120)h+=`<div style="text-align:center;color:#4a5c78;font-size:11px;padding:10px">仅显示前 120 只</div>`;
+  el.innerHTML=h;
+}
 
 window.addEventListener('resize',()=>{document.querySelectorAll('.box').forEach(el=>{const c=echarts.getInstanceByDom(el);if(c)c.resize()})});
 </script>

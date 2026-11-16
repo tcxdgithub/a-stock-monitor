@@ -2005,6 +2005,30 @@ def _search_stock_by_name(keyword):
     return results[:10]
 
 
+@app.route("/api/pool_screen")
+def pool_screen():
+    """中盘选股池：六因子复合评分名单（D7 为历史最优区）"""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "pool_result.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            res = json.load(f)
+        return jsonify({"code": 0, "data": res})
+    except Exception as e:
+        return jsonify({"code": -1, "msg": f"选股名单未生成，请先运行 screen_pool.py：{e}"})
+
+
+@app.route("/api/pool_refresh", methods=["POST"])
+def pool_refresh():
+    """后台触发选股引擎增量更新"""
+    try:
+        base = os.path.dirname(os.path.abspath(__file__))
+        subprocess.Popen(["python3", os.path.join(base, "screen_pool.py"), "--update"],
+                         cwd=base, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return jsonify({"code": 0, "msg": "已在后台更新，约 1-2 分钟后刷新"})
+    except Exception as e:
+        return jsonify({"code": -1, "msg": str(e)})
+
+
 @app.route("/api/stock_name_search")
 def stock_name_search():
     """按名称/代码搜索股票"""

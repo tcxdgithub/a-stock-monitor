@@ -21,3 +21,5 @@ sina_*.json
 watchlist.json
 yinxian_*.json
 cloudflared.exe
+data/*.pkl
+__pycache__/
