@@ -23,3 +23,5 @@ yinxian_*.json
 cloudflared.exe
 data/*.pkl
 __pycache__/
+data/positions.json
+run.log
