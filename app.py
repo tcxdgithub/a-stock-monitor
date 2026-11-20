@@ -2972,6 +2972,34 @@ WEIGHT_PRESETS = {
     },
 }
 
+_POSITION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "positions.json")
+_pos_cache = {"mtime": None, "data": {}}
+
+
+def _load_positions():
+    """读取持仓配置 data/positions.json，按 code 索引。文件改动后自动重载。"""
+    try:
+        mtime = os.path.getmtime(_POSITION_FILE)
+        if _pos_cache["mtime"] != mtime:
+            with open(_POSITION_FILE, encoding="utf-8") as f:
+                raw = json.load(f)
+            _pos_cache["data"] = {}
+            for x in raw:
+                c = str(x.get("code", "")).strip()
+                if not c:
+                    continue
+                _pos_cache["data"][c] = x
+                # 同时登记 6 位与带前缀两种写法，避免格式不匹配查不到
+                if len(c) == 8 and c[:2].lower() in ("sh", "sz"):
+                    _pos_cache["data"][c[2:]] = x
+                elif len(c) == 6:
+                    _pos_cache["data"][("sh" if c[0] in "659" else "sz") + c] = x
+            _pos_cache["mtime"] = mtime
+        return _pos_cache["data"]
+    except Exception:
+        return {}
+
+
 def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"):
     """综合分析股票，给出买入/卖出/持有建议"""
     # 1. 获取个股分析数据
@@ -3132,6 +3160,21 @@ def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"
 
     stop_loss_price = round(latest * (1 - stop_loss_pct), 2)
 
+    # === 持仓校准：有持仓的票，止损价冻结，不随现价每日漂移 ===
+    holding = None
+    _pos = _load_positions().get(code)
+    if _pos:
+        stop_loss_price = float(_pos.get("stop") or round(_pos["cost"] * (1 - stop_loss_pct), 2))
+        stop_loss_pct = 1 - stop_loss_price / latest
+        holding = {
+            "shares": _pos.get("shares", 0),
+            "cost": _pos.get("cost", 0),
+            "pnl_pct": round((latest / _pos["cost"] - 1) * 100, 2) if _pos.get("cost") else None,
+            "pnl_amount": round((latest - _pos["cost"]) * _pos.get("shares", 0)) if _pos.get("cost") else None,
+            "stop_hit": latest <= stop_loss_price,
+            "stop_source": "冻结价" if _pos.get("stop") else "成本推算",
+        }
+
     if score >= 70:
         suggestion = "可以买入"
         advice_color = "#34d399"
@@ -3171,6 +3214,7 @@ def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"
         "neu_signals": neu_signals,
         "market_strength": strength,
         "market_mood": overall.get("mood", "中性"),
+        "holding": holding,
     }
 
 
