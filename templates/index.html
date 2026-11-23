@@ -64,6 +64,7 @@ details summary{outline:none}
 <button data-t="sentiment" style="color:#a855f7">市场情绪</button>
 <button data-t="value" style="color:#f59e0b">低位埋伏</button>
 <button data-t="short" style="color:#f87171">短线交易</button>
+<button data-t="intraday" style="color:#fbbf24">日内T</button>
 <button data-t="etf" style="color:#06b6d4">ETF</button>
 <button data-t="analyze">个股分析</button>
 <button data-t="history">历史记录</button>
@@ -78,6 +79,7 @@ details summary{outline:none}
 <div id="p-sentiment" style="display:none;padding:0 14px 14px"></div>
 <div id="p-value" style="display:none;padding:0 14px 14px"></div>
 <div id="p-short" style="display:none;padding:0 14px 14px"></div>
+<div id="p-intraday" style="display:none;padding:0 14px 14px"></div>
 <div id="p-etf" style="display:none;padding:0 14px 14px"></div>
 <div id="p-analyze" style="display:none;padding:0 14px 14px"></div>
 <div id="p-history" style="display:none;padding:0 14px 14px"></div>
@@ -96,6 +98,7 @@ details summary{outline:none}
   <div class="modal-item"><label for="cfg-sentiment">市场情绪</label><input type="checkbox" id="cfg-sentiment" data-m="sentiment" checked></div>
   <div class="modal-item"><label for="cfg-value">低位埋伏</label><input type="checkbox" id="cfg-value" data-m="value" checked></div>
   <div class="modal-item"><label for="cfg-short">短线交易</label><input type="checkbox" id="cfg-short" data-m="short" checked></div>
+  <div class="modal-item"><label for="cfg-intraday">日内T</label><input type="checkbox" id="cfg-intraday" data-m="intraday" checked></div>
   <div class="modal-item"><label for="cfg-etf">ETF</label><input type="checkbox" id="cfg-etf" data-m="etf" checked></div>
   <div class="modal-item"><label for="cfg-analyze">个股分析</label><input type="checkbox" id="cfg-analyze" data-m="analyze" checked></div>
   <div class="modal-item"><label for="cfg-history">历史记录</label><input type="checkbox" id="cfg-history" data-m="history" checked></div>
@@ -125,8 +128,8 @@ details summary{outline:none}
 </div>
 
 <script>
-const ALL_MODULES=['sector','concept','stock','pool','sentiment','value','short','etf','analyze','history'];
-const MODULE_NAMES={sector:'行业板块',concept:'概念板块',stock:'热门个股',pool:'选股池',sentiment:'市场情绪',value:'低位埋伏',short:'短线交易',analyze:'个股分析',history:'历史记录'};
+const ALL_MODULES=['sector','concept','stock','pool','sentiment','value','short','intraday','etf','analyze','history'];
+const MODULE_NAMES={sector:'行业板块',concept:'概念板块',stock:'热门个股',pool:'选股池',sentiment:'市场情绪',value:'低位埋伏',short:'短线交易',intraday:'日内T',analyze:'个股分析',history:'历史记录'};
 const F=v=>{if(v==null||isNaN(v))return'--';let a=Math.abs(v);if(a>=1e12)return(v/1e12).toFixed(2)+'万亿';if(a>=1e8)return(v/1e8).toFixed(2)+'亿';if(a>=1e4)return(v/1e4).toFixed(2)+'万';return v.toFixed(2)};
 const P=v=>v==null?'--':v.toFixed(2)+'%';
 const C=v=>v>=0?'cup':'cdn';
@@ -173,7 +176,7 @@ document.getElementById('tabs').onclick=e=>{
   document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('on'));
   e.target.classList.add('on');
   const t=e.target.dataset.t;currentTab=t;
-  ['sector','concept','stock','pool','sentiment','value','short','etf','analyze','history'].forEach(n=>{
+  ['sector','concept','stock','pool','sentiment','value','short','intraday','etf','analyze','history'].forEach(n=>{
     const el=document.getElementById('p-'+n);
     if(el)el.style.display=n===t?'':'none';
     const pred=document.getElementById('p-predict-'+n);
@@ -1711,6 +1714,57 @@ const DEC_STYLE=d=>{
   if(d>=9)return'background:#1e293b;color:#64748b';
   return'background:#182335;color:#94a3b8';
 };
+/* ===== 日内T(底仓不动,当天低买高卖摊成本) ===== */
+let _intradayTimer=null;
+window.load_intraday=async()=>{
+  const el=document.getElementById('p-intraday');
+  if(!el)return;
+  if(!el.dataset.init){
+    el.dataset.init='1';
+    el.innerHTML=`
+      <div class="card" style="border-radius:10px;padding:10px 12px;font-size:12px;line-height:1.7">
+        <div style="font-weight:800;font-size:13px;color:#fbbf24;margin-bottom:4px">日内T策略（底仓不动 · 当天低买高卖摊成本）</div>
+        <div style="color:#8ea3c4">判断依据：<b style="color:#34d399">分时均价线(VWAP)</b>。价格跌破均价线达"半档日内波动"=买点；涨过均价线达"半档日内波动"=卖点。</div>
+        <div style="color:#8ea3c4">日内波动阈值每只票不同，按它近10日振幅中位数×0.5动态计算，不搞全局固定值。</div>
+      </div>
+      <div class="card" style="border-radius:10px;margin-top:10px"><div id="intraday-box" style="color:#5d7194;font-size:12px">加载中...</div></div>`;
+  }
+  loadIntraday();
+  if(_intradayTimer)clearInterval(_intradayTimer);
+  _intradayTimer=setInterval(loadIntraday,60000);
+};
+async function loadIntraday(){
+  const el=document.getElementById('intraday-box');
+  if(!el)return;
+  try{
+    const j=await(await fetch('/api/intraday_t')).json();
+    if(j.code!==0){el.innerHTML='<div style="color:#f87171">'+(j.msg||'加载失败')+'</div>';return}
+    const d=j.data||[];
+    const sigColor=s=>s==='买点'?'#34d399':s==='卖点'?'#f87171':s==='不做'?'#f59e0b':'#8ea3c4';
+    let h='<table><tr><th>代码</th><th>名称</th><th>现价</th><th>涨跌%</th><th>分时均价</th><th>偏离%</th><th>日内波动</th><th>买点线</th><th>卖点线</th><th>目标价差</th><th>信号</th><th>建议</th></tr>';
+    d.forEach(x=>{
+      const pc=x.pct_change==null?'--':x.pct_change.toFixed(2)+'%';
+      const pcCls=x.pct_change==null?'':(x.pct_change>=0?'cup':'cdn');
+      const dv=x.dev_pct==null?'--':x.dev_pct+'%';
+      const dvCls=x.dev_pct==null?'':(x.dev_pct>=0?'cup':'cdn');
+      h+='<tr>'
+        +'<td>'+x.code+'</td><td>'+x.name+'</td>'
+        +'<td>'+(x.price==null?'--':x.price)+'</td>'
+        +'<td class="'+pcCls+'">'+pc+'</td>'
+        +'<td>'+(x.vwap==null?'--':x.vwap)+'</td>'
+        +'<td class="'+dvCls+'">'+dv+'</td>'
+        +'<td>'+(x.sigma==null?'--':x.sigma+'%')+'</td>'
+        +'<td>'+(x.buy_line==null?'--':x.buy_line)+'</td>'
+        +'<td>'+(x.sell_line==null?'--':x.sell_line)+'</td>'
+        +'<td>'+(x.target_spread==null?'--':x.target_spread+'%')+'</td>'
+        +'<td style="color:'+sigColor(x.signal)+';font-weight:700">'+(x.signal||'--')+'</td>'
+        +'<td style="color:#8ea3c4;font-size:11px">'+(x.advice||'')+'</td>'
+        +'</tr>';
+    });
+    h+='</table><div style="color:#5d7194;font-size:10px;margin-top:6px">更新于 '+j.time+' · 每60秒自动刷新 · 阈值=近10日振幅中位数×0.5</div>';
+    el.innerHTML=h;
+  }catch(e){el.innerHTML='<div style="color:#f87171">加载失败</div>'}
+}
 function load_pool(){
   const el=document.getElementById('p-pool');
   el.innerHTML='<div style="text-align:center;color:#6b81a5;padding:40px">正在加载选股名单...</div>';

@@ -4871,6 +4871,109 @@ def yinxian_sell():
     return jsonify({"code": 0, "msg": "ok"})
 
 
+# ===== 日内T策略(底仓不动,当天低买高卖降成本) =====
+INTRA_DAY_STOCKS = [
+    ("600611", "大众交通"),
+    ("600702", "舍得酒业"),
+    ("000568", "泸州老窖"),
+    ("603605", "珀莱雅"),
+]
+INTRA_DAY_K = 0.5             # 偏离系数:偏离日内波动率的0.5倍算"到位"
+INTRA_DAY_MIN_SPREAD = 0.2    # 最小目标价差(%):覆盖手续费+滑点
+INTRA_DAY_WINDOW = 10         # 日内波动率统计窗口(交易日)
+
+
+def _in_trading_session(now):
+    if now.weekday() >= 5:
+        return False
+    t = now.hour * 100 + now.minute
+    return (930 <= t <= 1130) or (1300 <= t <= 1500)
+
+
+def _intraday_sigma(symbol):
+    """该股近期日内波动率(%) = 近N日振幅中位数, 振幅=(high-low)/prev_close"""
+    _, kl = _get_kline(symbol, 60)
+    if len(kl) < INTRA_DAY_WINDOW + 1:
+        return None
+    hist = kl[:-1]  # 去掉最后一根(今日盘中未走完)
+    amps = []
+    for i in range(1, len(hist)):
+        try:
+            high = float(hist[i][3])
+            low = float(hist[i][4])
+            prev_close = float(hist[i - 1][2])
+            if prev_close > 0 and high >= low:
+                amps.append((high - low) / prev_close * 100)
+        except Exception:
+            continue
+    if not amps:
+        return None
+    amps = amps[-INTRA_DAY_WINDOW:]
+    amps.sort()
+    n = len(amps)
+    return amps[n // 2] if n % 2 else (amps[n // 2 - 1] + amps[n // 2]) / 2
+
+
+def _intraday_t_one(code, name):
+    symbol = _code_to_symbol(code)
+    q = (_get_realtime_batch([symbol]) or [None])[0]
+    out = {"code": code, "name": name}
+    now = datetime.datetime.now()
+    in_session = _in_trading_session(now)
+    if not q:
+        out.update({"signal": "--", "advice": "行情获取失败"})
+        return out
+    price = q["price"]
+    vol = q.get("volume") or 0
+    amt = q.get("amount") or 0
+    vwap = (amt * 100 / vol) if vol > 0 else None
+    sigma = _intraday_sigma(symbol)
+    threshold = (INTRA_DAY_K * sigma) if sigma else None
+    out.update({
+        "price": price, "pct_change": q.get("pct_change"),
+        "vwap": round(vwap, 3) if vwap else None,
+        "sigma": round(sigma, 2) if sigma else None,
+        "threshold": round(threshold, 2) if threshold else None,
+    })
+    if not in_session:
+        out.update({"signal": "休市", "position": "--", "advice": "非交易时段,日内T信号无效"})
+        return out
+    if vwap is None or threshold is None:
+        out.update({"signal": "--", "position": "--", "advice": "分时数据或波动率缺失"})
+        return out
+    dev = (price / vwap - 1) * 100
+    buy_line = vwap * (1 - threshold / 100)
+    sell_line = vwap * (1 + threshold / 100)
+    spread = threshold * 2
+    spread_ok = spread >= INTRA_DAY_MIN_SPREAD
+    out.update({
+        "dev_pct": round(dev, 2),
+        "buy_line": round(buy_line, 3),
+        "sell_line": round(sell_line, 3),
+        "target_spread": round(spread, 2),
+        "spread_ok": spread_ok,
+        "position": "均价下方" if dev < 0 else "均价上方",
+    })
+    if not spread_ok:
+        out.update({"signal": "不做", "advice": "目标价差仅%.2f%%,不够覆盖手续费,做T不划算" % spread})
+    elif dev <= -threshold:
+        out.update({"signal": "买点", "advice": "现价低于均价%.2f%%,已到买点,可低吸做T(目标卖回均价上方)" % abs(dev)})
+    elif dev >= threshold:
+        out.update({"signal": "卖点", "advice": "现价高于均价%.2f%%,已到卖点,可高抛做T(等回落买回)" % dev})
+    else:
+        out.update({"signal": "中性", "advice": "价格在均价附近,未到买卖点,继续等"})
+    return out
+
+
+@app.route("/api/intraday_t")
+def api_intraday_t():
+    t0 = time.time()
+    data = [_intraday_t_one(c, n) for c, n in INTRA_DAY_STOCKS]
+    return jsonify({"code": 0, "data": data,
+                    "time": datetime.datetime.now().strftime("%H:%M"),
+                    "cost": round(time.time() - t0, 2)})
+
+
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 5000))
