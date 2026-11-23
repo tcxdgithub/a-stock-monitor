@@ -3032,6 +3032,14 @@ def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"
 
     # 获取权重配置
     weights = WEIGHT_PRESETS.get(weight_preset, WEIGHT_PRESETS["balanced"])
+    # 砍公共维度：个股评分只保留技术+估值，归一化到 1.0（大盘/情绪/板块不再计入个股分）
+    _w_tech = weights.get("technical", 0.25)
+    _w_val = weights.get("valuation", 0.15)
+    _base = _w_tech + _w_val
+    weights = dict(weights)
+    weights["technical"] = _w_tech / _base
+    weights["valuation"] = _w_val / _base
+    weights["market"] = weights["sentiment"] = weights["sector"] = 0.0
 
     # 4. 分析维度打分
     pos_signals = []   # 正面信号
@@ -3039,45 +3047,17 @@ def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"
     neu_signals = []   # 中性信号
     score = 50         # 基础分
 
-    # === 维度1: 大盘趋势 ===
+    # === 市场状态（不计入个股分，单独返回给前端管仓位） ===
     sh_index = next((x for x in overall.get("indices", []) if x["code"] == "000001"), None)
-    if sh_index:
-        sh_pct = sh_index.get("pct_change", 0)
-        if sh_pct > 0.5:
-            pos_signals.append({"text": "大盘上涨", "detail": f"上证涨{sh_pct:.1f}%，顺势操作"})
-            score += round(30 * weights["market"])
-        elif sh_pct > 0:
-            pos_signals.append({"text": "大盘微涨", "detail": "市场偏多"})
-            score += round(15 * weights["market"])
-        elif sh_pct > -0.5:
-            neu_signals.append({"text": "大盘横盘", "detail": "方向不明，谨慎为主"})
-            score += 0
-        else:
-            neg_signals.append({"text": "大盘下跌", "detail": f"上证跌{sh_pct:.1f}%，逆势风险大"})
-            score -= round(30 * weights["market"])
-
-    # === 维度2: 市场情绪 ===
-    if strength >= 60:
-        pos_signals.append({"text": "市场情绪积极", "detail": f"情绪强度{strength}，资金活跃"})
-        score += round(20 * weights["sentiment"])
-    elif strength >= 45:
-        neu_signals.append({"text": "市场情绪中性", "detail": f"情绪强度{strength}"})
-        score += 0
+    sh_pct = sh_index.get("pct_change", 0) if sh_index else 0
+    if sh_pct > 0.5:
+        market_state, market_advice_position = "强势", 0.8
+    elif sh_pct > 0:
+        market_state, market_advice_position = "偏多", 0.6
+    elif sh_pct > -0.5:
+        market_state, market_advice_position = "横盘", 0.5
     else:
-        neg_signals.append({"text": "市场情绪低迷", "detail": f"情绪强度{strength}，恐慌情绪"})
-        score -= round(20 * weights["sentiment"])
-
-    # === 维度3: 板块资金 ===
-    total_sector_flow = sum(s["net_inflow"] for s in sector_data)
-    if total_sector_flow > 10e8:
-        pos_signals.append({"text": "板块资金净流入", "detail": "板块整体资金流入"})
-        score += round(25 * weights["sector"])
-    elif total_sector_flow > -10e8:
-        neu_signals.append({"text": "板块资金平衡", "detail": "资金流向中性"})
-        score += 0
-    else:
-        neg_signals.append({"text": "板块资金净流出", "detail": "板块整体资金流出"})
-        score -= round(25 * weights["sector"])
+        market_state, market_advice_position = "弱势", 0.3
 
     # === 维度4: 技术形态 ===
     cur_ma5 = ma5[-1] if ma5 else 0
@@ -3218,6 +3198,9 @@ def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"
         "neu_signals": neu_signals,
         "market_strength": strength,
         "market_mood": overall.get("mood", "中性"),
+        "market_state": market_state,
+        "market_advice_position": round(market_advice_position * 100),
+        "market_pct": sh_pct,
         "holding": holding,
     }
 

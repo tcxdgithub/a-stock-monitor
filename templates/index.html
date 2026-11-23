@@ -1391,7 +1391,7 @@ function renderTradingDecision(d,code){
         <div style="color:#6b81a5">止损位 <span style="color:#f87171;font-weight:bold">${d.stop_loss_price}</span>（${d.stop_loss_price > d.latest ? '现价低于止损线 ' + Math.abs(d.stop_loss_pct) + '%' : '距止损线 ' + Math.abs(d.stop_loss_pct) + '%'}）</div>
         <div style="color:#6b81a5">目标仓位 <span style="color:#34d399;font-weight:bold">${d.target_position}%</span></div>
         ${d.holding ? '<div style="color:#6b81a5">补仓参考 <span style="color:#38bdf8;font-weight:bold">' + d.holding.rebuy_1 + ' / ' + d.holding.rebuy_2 + '</span>（等额补仓回本 ' + d.holding.equal_breakeven + '）</div>' : ''}
-        <div style="color:#6b81a5;margin-top:4px;font-size:10px">大盘：${d.market_mood}（${d.market_strength}分）</div>
+        <div style="color:#6b81a5;margin-top:4px;font-size:10px">市场状态 <span style="font-weight:bold;color:${d.market_pct >= 0 ? '#34d399' : '#f87171'}">${d.market_state}</span>（${d.market_pct >= 0 ? '+' : ''}${d.market_pct}%）· 建议总仓位 <span style="font-weight:bold;color:#38bdf8">${d.market_advice_position}%</span></div>
       </div>
     </div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
