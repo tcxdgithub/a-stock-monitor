@@ -59,6 +59,36 @@ def build_row(info):
     return out
 
 
+def fetch_valuation(codes):
+    """腾讯实时 PE/PB，返回 {code: (pe, pb)}，code 用带前缀形式"""
+    out = {}
+    for i in range(0, len(codes), 50):
+        batch = codes[i:i + 50]
+        try:
+            r = requests.get("https://qt.gtimg.cn/q=" + ",".join(batch),
+                             headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.qq.com/"},
+                             timeout=20)
+            r.encoding = "gbk"
+            for line in r.text.strip().split(";"):
+                if "=" not in line:
+                    continue
+                sym, payload = line.split("=", 1)
+                code = sym.replace("v_", "").strip()
+                p = payload.strip('"').split("~")
+                if len(p) <= 46:
+                    continue
+                try:
+                    pe = float(p[39] or 0)
+                    pb = float(p[46] or 0)
+                except ValueError:
+                    pe, pb = 0, 0
+                out[code] = (pe, pb)
+        except Exception:
+            pass
+        time.sleep(0.2)
+    return out
+
+
 def main():
     pool = pickle.load(open(DATA, "rb"))
     if "--update" in sys.argv:
@@ -82,6 +112,14 @@ def main():
     if len(df) < 50:
         print("有效标的不足", len(df))
         return
+
+    # === 估值硬过滤（实时 PE/PB，排雷而非预测） ===
+    val = fetch_valuation(list(df["code"]))
+    df["pe"] = df["code"].map(lambda c: val.get(c, (0, 0))[0])
+    df["pb"] = df["code"].map(lambda c: val.get(c, (0, 0))[1])
+    before = len(df)
+    df = df[(df["pe"] > 0) & (df["pe"] <= 80) & (df["pb"] > 0)]
+    print(f"估值过滤: {before} -> {len(df)} 只（剔除 PE<=0 亏损 / PE>80 泡沫 / PB<=0）", flush=True)
 
     rk = pd.DataFrame({f: df[f].rank(pct=True) for f in FEATS})
     df["comp"] = -sum(FEAT_WEIGHTS[f] * rk[f] for f in FEATS)
