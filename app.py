@@ -3104,8 +3104,8 @@ def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"
         neg_signals.append({"text": "放量下跌", "detail": f"量比{vol_trend:.1f}倍，资金出逃"})
         score -= round(20 * weights["technical"])
     elif vol_trend < 0.7 and pct_change > 0:
-        neu_signals.append({"text": "缩量上涨", "detail": "主力控盘，散户惜售"})
-        score += round(5 * weights["technical"])
+        neu_signals.append({"text": "缩量上涨", "detail": "无量上涨，缺乏资金推动，持续性存疑"})
+        score += 0
     elif vol_trend < 0.7 and pct_change < 0:
         neu_signals.append({"text": "缩量下跌", "detail": "抛压减弱但买盘未至，属于跌不动而非见底"})
         score += 0
