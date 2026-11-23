@@ -991,6 +991,8 @@ def _analyze_stock(symbol, days=60):
         _rt = _get_realtime_batch([symbol])
         if _rt:
             _r = _rt[0]
+            if not name and _r.get("name"):
+                name = _r["name"]
             if _r.get("price") and _r["price"] > 0:
                 cur = _r["price"]
                 latest = {**latest, "close": cur, "open": _r.get("open") or latest["open"],
@@ -3000,6 +3002,27 @@ def _load_positions():
         return {}
 
 
+def _technical_stop(kline, latest):
+    """技术位止损: 近20日最低价(前低)破位止损; 已破前低则现价下方3%缓冲。
+    kline 为 dict 列表(含 low 字段), 最后一根为今日。"""
+    if not kline or len(kline) < 2:
+        return None, "无技术位"
+    lows = []
+    for k in kline[:-1][-20:]:
+        try:
+            v = float(k.get("low", 0))
+            if v > 0:
+                lows.append(v)
+        except Exception:
+            continue
+    if not lows:
+        return None, "无技术位"
+    prev_low = min(lows)
+    if latest > prev_low:
+        return round(prev_low, 2), "前低"
+    return round(latest * 0.97, 2), "破前低缓冲"
+
+
 def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"):
     """综合分析股票，给出买入/卖出/持有建议"""
     # 1. 获取个股分析数据
@@ -3135,24 +3158,24 @@ def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"
     # === 生成建议 ===
     stop_loss_map = {"conservative": 0.02, "moderate": 0.03, "aggressive": 0.05}
     position_map = {"conservative": 0.15, "moderate": 0.20, "aggressive": 0.30}
-    stop_loss_pct = stop_loss_map.get(risk_pref, 0.03)
     target_position = position_map.get(risk_pref, 0.20)
 
-    stop_loss_price = round(latest * (1 - stop_loss_pct), 2)
+    # === 技术位止损: 前低(近20日最低价)破位止损, 已破前低则现价下方3%缓冲 ===
+    tech_stop, stop_src = _technical_stop(kline, latest)
+    stop_loss_price = tech_stop if tech_stop else round(latest * (1 - stop_loss_map.get(risk_pref, 0.03)), 2)
+    # stop_loss_pct 统一为"止损价相对现价偏离": 负=止损在下方(安全), 正=止损在上方(已击穿)
+    stop_loss_pct = (latest - stop_loss_price) / latest if stop_loss_price else None
 
-    # === 持仓校准：有持仓的票，止损价冻结，不随现价每日漂移 ===
     holding = None
     _pos = _load_positions().get(code)
     if _pos:
-        stop_loss_price = float(_pos.get("stop") or round(_pos["cost"] * (1 - stop_loss_pct), 2))
-        stop_loss_pct = 1 - stop_loss_price / latest
         holding = {
             "shares": _pos.get("shares", 0),
             "cost": _pos.get("cost", 0),
             "pnl_pct": round((latest / _pos["cost"] - 1) * 100, 2) if _pos.get("cost") else None,
             "pnl_amount": round((latest - _pos["cost"]) * _pos.get("shares", 0)) if _pos.get("cost") else None,
             "stop_hit": latest <= stop_loss_price,
-            "stop_source": "冻结价" if _pos.get("stop") else "成本推算",
+            "stop_source": stop_src or "技术位",
             # 亏损补仓参考：两档网格价 + 等额补仓后的回本价
             "rebuy_1": round(latest * 0.95, 2),
             "rebuy_2": round(latest * 0.90, 2),
@@ -3191,7 +3214,7 @@ def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"
         "advice_color": advice_color,
         "advice_emoji": advice_emoji,
         "stop_loss_price": stop_loss_price,
-        "stop_loss_pct": round(stop_loss_pct * 100, 1),
+        "stop_loss_pct": round(stop_loss_pct * 100, 1) if stop_loss_pct is not None else None,
         "target_position": round(target_position * 100),
         "pos_signals": pos_signals,
         "neg_signals": neg_signals,
