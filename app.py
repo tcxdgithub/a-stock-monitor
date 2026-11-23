@@ -3107,8 +3107,8 @@ def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"
         neu_signals.append({"text": "缩量上涨", "detail": "主力控盘，散户惜售"})
         score += round(5 * weights["technical"])
     elif vol_trend < 0.7 and pct_change < 0:
-        pos_signals.append({"text": "缩量下跌", "detail": "抛压减弱，洗盘概率大"})
-        score += round(5 * weights["technical"])
+        neu_signals.append({"text": "缩量下跌", "detail": "抛压减弱但买盘未至，属于跌不动而非见底"})
+        score += 0
 
     # 行为识别
     if behavior == "吸筹":
