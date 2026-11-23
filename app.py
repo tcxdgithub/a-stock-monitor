@@ -3173,6 +3173,10 @@ def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"
             "pnl_amount": round((latest - _pos["cost"]) * _pos.get("shares", 0)) if _pos.get("cost") else None,
             "stop_hit": latest <= stop_loss_price,
             "stop_source": "冻结价" if _pos.get("stop") else "成本推算",
+            # 亏损补仓参考：两档网格价 + 等额补仓后的回本价
+            "rebuy_1": round(latest * 0.95, 2),
+            "rebuy_2": round(latest * 0.90, 2),
+            "equal_breakeven": round((latest + (_pos.get("cost") or latest)) / 2, 2),
         }
 
     if score >= 70:
