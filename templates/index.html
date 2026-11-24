@@ -1397,6 +1397,16 @@ function renderTradingDecision(d,code){
         <div style="color:#6b81a5;margin-top:4px;font-size:10px">市场状态 <span style="font-weight:bold;color:${d.market_pct >= 0 ? '#34d399' : '#f87171'}">${d.market_state}</span>（${d.market_pct >= 0 ? '+' : ''}${d.market_pct}%）· 建议总仓位 <span style="font-weight:bold;color:#38bdf8">${d.market_advice_position}%</span></div>
       </div>
     </div>
+    ${d.tomorrow_plan ? `
+    <div style="margin-top:10px;background:#0a1526;border-radius:6px;padding:10px">
+      <div style="font-size:12px;font-weight:700;color:#fbbf24;margin-bottom:4px">明日分情景预案</div>
+      <div style="font-size:11px;color:#e2e8f0;margin-bottom:6px">当前阶段：<b style="color:#fbbf24">${d.tomorrow_plan.stage}</b> <span style="color:#6b81a5">${d.tomorrow_plan.stage_desc}</span></div>
+      ${(d.tomorrow_plan.scenarios||[]).map(s=>{
+        const c=s.action_type==='buy'?'#34d399':s.action_type==='avoid'?'#f87171':'#8ea3c4';
+        return '<div style="font-size:11px;padding:3px 0;border-top:1px solid #1b2942"><span style="color:'+c+';font-weight:700">'+s.name+'</span>：<span style="color:#8ea3c4">'+s.trigger+'</span> → <span style="color:'+c+';font-weight:700">'+s.action+'</span></div>';
+      }).join('')}
+      <div style="font-size:10px;color:#5d7194;margin-top:4px">关键位：今日低 ${d.tomorrow_plan.key_levels.today_low ?? '--'} · 5日前低 ${d.tomorrow_plan.key_levels.prev_low_5d ?? '--'} · MA5 ${d.tomorrow_plan.key_levels.ma5 ?? '--'} · MA10 ${d.tomorrow_plan.key_levels.ma10 ?? '--'}</div>
+    </div>` : ''}
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
       <div style="text-align:center;font-size:10px;color:#5d7194">仅供参考，不构成投资建议</div>
       <button onclick="openAlertModal('${code}','${d.name}',${d.latest})" style="padding:4px 12px;background:#38bdf8;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer">设置价格预警</button>

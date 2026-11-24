@@ -3023,6 +3023,81 @@ def _technical_stop(kline, latest):
     return round(latest * 0.97, 2), "破前低缓冲"
 
 
+def _tomorrow_plan(analysis):
+    """明日分情景预案: 结合过往量价+当天, 给明日几种走法及每种走法的触发条件+动作。
+    不预测涨跌, 只给条件触发式操作预案。"""
+    kline = analysis.get("kline", [])
+    ma5 = analysis.get("ma5", [])
+    ma10 = analysis.get("ma10", [])
+    ma20 = analysis.get("ma20", [])
+    k_values = analysis.get("k_values", [])
+    d_values = analysis.get("d_values", [])
+    a = analysis.get("analysis", {})
+    latest = analysis.get("latest", 0)
+    today_pct = analysis.get("pct_change", 0)
+
+    if not kline or len(kline) < 6:
+        return None
+
+    hist = kline[:-1]          # 排除今日
+    recent = hist[-5:]         # 近5日
+    today = kline[-1]          # 今日
+    today_vol = today.get("volume", 0) or 0
+    today_low = today.get("low", 0) or 0
+
+    recent_lows = [k.get("low", 0) for k in recent if (k.get("low") or 0) > 0]
+    prev_low = min(recent_lows) if recent_lows else None
+
+    cur_ma5 = ma5[-1] if ma5 else 0
+    cur_ma10 = ma10[-1] if ma10 else 0
+    cur_ma20 = ma20[-1] if ma20 else 0
+    bull = cur_ma5 > cur_ma10 > cur_ma20 > 0
+    bear = cur_ma5 < cur_ma10 < cur_ma20 and cur_ma20 > 0
+
+    kdj_oversold = False
+    if k_values and d_values:
+        kv, dv = k_values[-1], d_values[-1]
+        kdj_oversold = kv is not None and dv is not None and kv < 20 and dv < 20
+
+    vol_trend = a.get("vol_trend", 1) or 1
+    vol_level = a.get("vol_level", "")
+
+    # === 当前位置阶段 ===
+    if bull:
+        stage, stage_desc = "上涨趋势", "均线多头排列,趋势向上,回踩不破MA5可持"
+    elif bear and kdj_oversold and (vol_level in ("缩量", "地量") or today_pct >= 0):
+        stage, stage_desc = "超卖企稳", "均线空头但KDJ超卖+缩量止跌,抛压衰竭迹象"
+    elif bear:
+        stage, stage_desc = "下跌中继", "均线空头,未见企稳信号,不接飞刀"
+    elif today_pct > 0 and vol_trend > 1.2:
+        stage, stage_desc = "放量反弹", "今日放量上涨,看明日能否站稳"
+    else:
+        stage, stage_desc = "震荡", "均线交织,方向不明,轻仓或观望"
+
+    key_levels = {
+        "today_low": round(today_low, 2) if today_low else None,
+        "prev_low_5d": round(prev_low, 2) if prev_low else None,
+        "ma5": round(cur_ma5, 2) if cur_ma5 else None,
+        "ma10": round(cur_ma10, 2) if cur_ma10 else None,
+    }
+
+    low_txt = f"{round(today_low, 2)}" if today_low else "今日低点"
+    scenarios = [
+        {"id": "A", "name": "放量上攻",
+         "trigger": f"明日成交额>今日1.3倍 且 涨幅>1%",
+         "action": "轻仓介入,试仓3-5%", "action_type": "buy"},
+        {"id": "B", "name": "缩量企稳",
+         "trigger": f"缩量(量<今日0.7倍) 且 收盘不破 {low_txt}",
+         "action": "继续观察,等放量确认再加", "action_type": "wait"},
+        {"id": "C", "name": "放量续跌",
+         "trigger": f"放量 且 跌破 {low_txt}",
+         "action": "观望/止损,不接飞刀", "action_type": "avoid"},
+    ]
+
+    return {"stage": stage, "stage_desc": stage_desc,
+            "scenarios": scenarios, "key_levels": key_levels}
+
+
 def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"):
     """综合分析股票，给出买入/卖出/持有建议"""
     # 1. 获取个股分析数据
@@ -3225,6 +3300,7 @@ def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"
         "market_advice_position": round(market_advice_position * 100),
         "market_pct": sh_pct,
         "holding": holding,
+        "tomorrow_plan": _tomorrow_plan(analysis),
     }
 
 
