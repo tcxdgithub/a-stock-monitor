@@ -902,6 +902,29 @@ def _load_rule_stats():
     return _rule_stats
 
 
+_rule_edges = None
+
+
+def _load_rule_edges():
+    """加载每条回测规则的3日超额收益 edge3(触发后3日均收益 - 全样本基准)。
+    正=该信号出现后跑赢大盘(买点方向)，负=跑输大盘(规避方向)。
+    这是评分系统的唯一事实来源，替代旧版均线+量价+估值的主观打分。"""
+    global _rule_edges
+    if _rule_edges is not None:
+        return _rule_edges
+    _rule_edges = {}
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backtest_rules_result.json")
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for r in data.get("rules", []):
+                _rule_edges[r.get("id", "")] = r.get("edge3", 0.0)
+    except Exception:
+        pass
+    return _rule_edges
+
+
 _state_dist = None
 
 
@@ -3139,11 +3162,28 @@ def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"
     weights["valuation"] = _w_val / _base
     weights["market"] = weights["sentiment"] = weights["sector"] = 0.0
 
-    # 4. 分析维度打分
-    pos_signals = []   # 正面信号
-    neg_signals = []   # 负面信号
-    neu_signals = []   # 中性信号
-    score = 50         # 基础分
+    # 4. 回测证据驱动的评分（替代旧版"均线+量价+估值"主观打分）
+    # 旧版 score 由均线排列/量价/PE-PB 主观打分，回测证明这些因子无效甚至反向：
+    #   放量突破MA5(R8) edge -0.25%、价涨量缩(R10) 无效、均线排列无显著edge。
+    # 新版 score 只由"触发规则的3日超额收益 edge3"驱动，诚实反映该票可预期的
+    # 涨跌倾向；大部分时间 score 在 50 附近(无edge=观望)，极端信号才显著偏离。
+    pos_signals = []   # 正面信号(edge>0)
+    neg_signals = []   # 负面信号(edge<0)
+    neu_signals = []   # 中性信号(无显著edge)
+    rule_edges = _load_rule_edges()
+    score = 50.0
+    for s in signals:
+        rid = _rule_text_to_id(s.get("text", ""))
+        edge = rule_edges.get(rid, 0.0)
+        contrib = max(-20.0, min(20.0, edge * 10.0))  # edge每1%≈10分，单条封顶±20
+        if contrib > 0.5:
+            pos_signals.append({"text": s["text"], "detail": f"回测3日edge {edge:+.2f}%"})
+            score += contrib
+        elif contrib < -0.5:
+            neg_signals.append({"text": s["text"], "detail": f"回测3日edge {edge:+.2f}%"})
+            score += contrib
+        else:
+            neu_signals.append({"text": s["text"], "detail": f"回测edge {edge:+.2f}%，无显著方向"})
 
     # === 市场状态（不计入个股分，单独返回给前端管仓位） ===
     sh_index = next((x for x in overall.get("indices", []) if x["code"] == "000001"), None)
@@ -3157,49 +3197,26 @@ def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"
     else:
         market_state, market_advice_position = "弱势", 0.3
 
-    # === 维度4: 技术形态 ===
+    # === 均线形态 → 仅展示，不进分（回测无显著edge） ===
     cur_ma5 = ma5[-1] if ma5 else 0
     cur_ma10 = ma10[-1] if ma10 else 0
     cur_ma20 = ma20[-1] if ma20 else 0
-
-    # 均线多头排列
     if cur_ma5 > cur_ma10 > cur_ma20 > 0:
-        pos_signals.append({"text": "均线多头排列", "detail": "5/10/20日线向上发散"})
-        score += round(30 * weights["technical"])
+        neu_signals.append({"text": "均线多头排列", "detail": "形态参考，不计分"})
     elif cur_ma5 < cur_ma10 < cur_ma20 and cur_ma20 > 0:
-        neg_signals.append({"text": "均线空头排列", "detail": "5/10/20日线向下发散"})
-        score -= round(30 * weights["technical"])
+        neu_signals.append({"text": "均线空头排列", "detail": "形态参考，不计分"})
     else:
         neu_signals.append({"text": "均线交织", "detail": "方向不明"})
-        score += 0
 
-    # 量价配合
-    vol_trend = a.get("vol_trend", 1)
-    if vol_trend > 1.5 and pct_change > 0:
-        pos_signals.append({"text": "放量上涨", "detail": f"量比{vol_trend:.1f}倍，资金积极介入"})
-        score += round(20 * weights["technical"])
-    elif vol_trend > 1.5 and pct_change < 0:
-        neg_signals.append({"text": "放量下跌", "detail": f"量比{vol_trend:.1f}倍，资金出逃"})
-        score -= round(20 * weights["technical"])
-    elif vol_trend < 0.7 and pct_change > 0:
-        neu_signals.append({"text": "缩量上涨", "detail": "无量上涨，缺乏资金推动，持续性存疑"})
-        score += 0
-    elif vol_trend < 0.7 and pct_change < 0:
-        neu_signals.append({"text": "缩量下跌", "detail": "抛压减弱但买盘未至，属于跌不动而非见底"})
-        score += 0
-
-    # 行为识别
+    # === 行为分类 → 仅展示，不进分（回测: 吸筹+0.09/洗盘+0.09微正, 出货-0.5有效） ===
     if behavior == "吸筹":
-        pos_signals.append({"text": "主力吸筹", "detail": "有资金在收集筹码"})
-        score += round(15 * weights["technical"])
+        neu_signals.append({"text": "主力吸筹", "detail": "回测3日+0.09%，弱正"})
     elif behavior == "出货":
-        neg_signals.append({"text": "主力出货", "detail": "有资金在撤离"})
-        score -= round(15 * weights["technical"])
+        neg_signals.append({"text": "主力出货", "detail": "回测3日-0.5%，规避"})
     elif behavior == "洗盘":
-        neu_signals.append({"text": "洗盘阶段", "detail": "正常调整，清洗浮筹"})
-        score += round(3 * weights["technical"])
+        neu_signals.append({"text": "洗盘阶段", "detail": "回测3日+0.09%，弱正"})
 
-    # === 维度5: 估值 ===
+    # === 估值 → 仅展示，不进分（PE/PB 对3日走势无预测力，只影响中长期） ===
     try:
         raw = _curl(f"https://qt.gtimg.cn/q={symbol}",
                     ["-H", f"User-Agent: {UA}", "-H", "Referer: https://finance.qq.com/"], enc="gbk")
@@ -3207,28 +3224,21 @@ def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"
             p = raw.split("=", 1)[1].strip('"').split("~")
             pe = float(p[39] or 0) if len(p) > 39 else 0
             pb = float(p[46] or 0) if len(p) > 46 else 0
-
             if 0 < pe < 15:
-                pos_signals.append({"text": "估值偏低", "detail": f"PE={pe:.1f}，处于历史低位"})
-                score += round(20 * weights["valuation"])
+                neu_signals.append({"text": "估值偏低", "detail": f"PE={pe:.1f}，长期视角参考"})
             elif 15 <= pe < 30:
                 neu_signals.append({"text": "估值适中", "detail": f"PE={pe:.1f}"})
-                score += 0
             elif pe >= 30:
-                neg_signals.append({"text": "估值偏高", "detail": f"PE={pe:.1f}，注意泡沫风险"})
-                score -= round(20 * weights["valuation"])
-
+                neu_signals.append({"text": "估值偏高", "detail": f"PE={pe:.1f}，长期视角参考"})
             if 0 < pb < 1:
-                pos_signals.append({"text": "破净", "detail": f"PB={pb:.2f}，股价低于净资产"})
-                score += round(10 * weights["valuation"])
+                neu_signals.append({"text": "破净", "detail": f"PB={pb:.2f}"})
             elif pb >= 5:
-                neg_signals.append({"text": "PB偏高", "detail": f"PB={pb:.2f}"})
-                score -= round(5 * weights["valuation"])
+                neu_signals.append({"text": "PB偏高", "detail": f"PB={pb:.2f}"})
     except Exception:
         pe, pb = 0, 0
 
     # === 限制分数范围 ===
-    score = max(0, min(100, score))
+    score = max(0, min(100, round(score)))
 
     # === 生成建议 ===
     stop_loss_map = {"conservative": 0.02, "moderate": 0.03, "aggressive": 0.05}
