@@ -56,6 +56,7 @@ details summary{outline:none}
 <div id="ld"><h2>A股资金流向</h2><p id="ltxt">加载中...</p><div class="bar"><i></i></div></div>
 
 <div class="hd"><h1>A股资金流向监控</h1><small id="tm"></small></div>
+<div id="rebuy-bar" style="display:none;margin:0 14px 10px"></div>
 <div class="tabs" id="tabs">
 <button class="on" data-t="sector">行业板块</button>
 <button data-t="concept">概念板块</button>
@@ -135,6 +136,25 @@ const P=v=>v==null?'--':v.toFixed(2)+'%';
 const C=v=>v>=0?'cup':'cdn';
 setInterval(()=>{document.getElementById('tm').textContent=new Date().toLocaleString('zh-CN')},1000);
 document.getElementById('tm').textContent=new Date().toLocaleString('zh-CN');
+
+/* 周线超跌补仓提醒（只提醒不下单） */
+async function loadRebuyReminder(){
+  const bar=document.getElementById('rebuy-bar');
+  if(!bar)return;
+  try{
+    const r=await fetch('/api/rebuy_reminder');
+    const j=await r.json();
+    const d=(j&&j.data)||[];
+    if(!d.length){bar.style.display='none';return;}
+    bar.style.display='block';
+    bar.innerHTML='<div style="background:#7c2d1218;border:1px solid #f59e0b55;border-radius:8px;padding:10px 12px">'+
+      '<div style="font-size:12px;font-weight:700;color:#fbbf24;margin-bottom:4px">补仓提醒（周线超跌信号，仅提醒不下单）</div>'+
+      d.map(x=>'<div style="font-size:11px;color:#e2e8f0;padding:2px 0"><b style="color:#fbbf24">'+x.code+'</b> '+x.state+' · 周MA20 '+x.weekly_ma20+'</div><div style="font-size:11px;color:#8ea3c4;margin-bottom:4px">'+x.advice+'</div>').join('')+
+      '<div style="font-size:10px;color:#5d7194;margin-top:4px">补仓前确认基本面未恶化，分批不重仓，补完设止损。</div>'+
+      '</div>';
+  }catch(e){bar.style.display='none'}
+}
+loadRebuyReminder();
 
 /* Config Management */
 function getConfig(){try{return JSON.parse(localStorage.getItem('stock_modules_config')||'null')}catch(e){return null}}

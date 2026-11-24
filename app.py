@@ -3648,6 +3648,45 @@ def api_alert_check():
     return jsonify({"code": 0, "data": triggered})
 
 
+_rebuy_cache = {"ts": 0, "data": []}
+
+
+def _rebuy_reminders():
+    """周线超跌补仓提醒: 检查持仓票是否触发周线超跌(跌破20周低)信号。
+    只提醒, 不下单。带5分钟缓存, 避免频繁拉800日K线。"""
+    now = time.time()
+    if now - _rebuy_cache["ts"] < 300:
+        return _rebuy_cache["data"]
+    positions = _load_positions()
+    reminders = []
+    for code, pos in positions.items():
+        if len(code) == 8:  # 跳过带前缀的重复登记
+            continue
+        if not pos or not pos.get("shares"):
+            continue
+        symbol = _code_to_symbol(code)
+        try:
+            wb = _weekly_box(symbol)
+        except Exception:
+            continue
+        if wb and wb.get("broke_20w_low"):
+            reminders.append({
+                "code": code,
+                "state": wb["state"],
+                "weekly_ma20": wb["weekly_ma20"],
+                "advice": wb["advice"],
+            })
+    _rebuy_cache["ts"] = now
+    _rebuy_cache["data"] = reminders
+    return reminders
+
+
+@app.route("/api/rebuy_reminder")
+def api_rebuy_reminder():
+    """周线超跌补仓提醒 API(只提醒不下单)"""
+    return jsonify({"code": 0, "data": _rebuy_reminders()})
+
+
 # ===== 短线爆发股预警系统 =====
 _short_term_pool = []  # 扫描股票池
 _short_term_alerts = []  # 预警列表
