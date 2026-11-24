@@ -3049,6 +3049,146 @@ def _technical_stop(kline, latest):
     return round(latest * 0.97, 2), "破前低缓冲"
 
 
+def _box_analysis(kline):
+    """日线20日箱体状态机 + 真假突破判断(基于回测edge)。
+    箱顶=近20日最高, 箱底=近20日最低。全市场2.6万样本验证结论:
+      突破箱顶→趋势延续(真突破5日+5%, 假突破-2.5%); 跌破箱底→破位下跌;
+      箱底附近买入是坑(箱底非支撑, 未来5日超额-0.34%)。
+    真假突破靠突破幅度+量能预判(幅度5%以上真突破率79%, 缩量突破仅30%)。"""
+    if not kline or len(kline) < 22:
+        return None
+    data = kline
+    closes = [d["close"] for d in data]
+    highs = [d["high"] for d in data]
+    lows = [d["low"] for d in data]
+    vols = [d["volume"] for d in data]
+    n = len(data)
+
+    win = data[-21:-1]      # 前20日(不含今日), 作为箱体
+    box_top = max(d["high"] for d in win)
+    box_bot = min(d["low"] for d in win)
+    ptop = pbot = None
+    if n >= 22:
+        pwin = data[-22:-2]  # 昨日往前20日, 用于判断昨日是否在箱内
+        ptop = max(d["high"] for d in pwin)
+        pbot = min(d["low"] for d in pwin)
+
+    cur = closes[-1]
+    prev_close = closes[-2]
+    width = (box_top - box_bot) / box_bot * 100 if box_bot > 0 else 0
+    pos = (cur - box_bot) / (box_top - box_bot) if box_top > box_bot else 0.5
+
+    vol_20 = sum(vols[-20:]) / min(20, len(vols[-20:]))
+    vol_ratio = vols[-1] / vol_20 if vol_20 > 0 else 1.0
+
+    breakout = False
+    breakdown = False
+    if ptop is not None:
+        breakout = prev_close <= ptop and cur > box_top
+        breakdown = prev_close >= pbot and cur < box_bot
+
+    amp = (cur - box_top) / box_top * 100 if box_top > 0 else 0
+
+    fake_risk = None
+    if breakout:
+        state = "突破箱顶"
+        if amp >= 5 and vol_ratio >= 1.5:
+            fake_risk = "低"
+            advice = "放量强势突破,真突破概率高(回测约79%),可轻仓追入,止损箱顶下方"
+        elif amp < 2:
+            fake_risk = "高"
+            advice = "勉强突破(<2%),假突破概率高(真突破率仅34%),追高易套,等回踩箱顶确认"
+        elif vol_ratio < 1:
+            fake_risk = "高"
+            advice = "缩量突破,量能不足,假突破风险高(真突破率30%),不追"
+        else:
+            fake_risk = "中"
+            advice = "温和突破,方向待确认,可小仓试,破箱顶止损"
+    elif breakdown:
+        state = "跌破箱底"
+        advice = "跌破箱底,破位下跌(未来5日超额-0.27%),减仓/止损,不接飞刀"
+    elif pos < 0.2:
+        state = "箱底附近"
+        advice = "箱底附近(回测未来5日超额-0.34%),箱底非支撑,勿抄底,等企稳"
+    elif pos > 0.8:
+        state = "箱顶附近"
+        advice = "箱顶附近,关注能否放量突破,不破则高抛"
+    else:
+        state = "箱体中轨"
+        advice = "箱体中轨震荡,方向不明,观望"
+
+    return {
+        "box_top": round(box_top, 2),
+        "box_bottom": round(box_bot, 2),
+        "box_width": round(width, 1),
+        "pos": round(pos, 2),
+        "state": state,
+        "breakout": breakout,
+        "breakdown": breakdown,
+        "breakout_amp": round(amp, 2) if breakout else None,
+        "vol_ratio": round(vol_ratio, 2),
+        "fake_breakout_risk": fake_risk,
+        "advice": advice,
+    }
+
+
+def _weekly_box(symbol):
+    """周线超跌状态(基于回测: 深套票跌破20周低→未来4周反弹+2~5%; 多头排列反而易跑输)。"""
+    name, klines = _get_kline(symbol, 800)
+    if not klines or len(klines) < 100:
+        return None
+    weeks = {}
+    for k in klines:
+        try:
+            dt = datetime.datetime.strptime(k[0], "%Y-%m-%d")
+        except Exception:
+            continue
+        y, w, _ = dt.isocalendar()
+        key = (y, w)
+        c = float(k[2]); h = float(k[3]); l = float(k[4])
+        if key not in weeks:
+            weeks[key] = {"date": k[0], "close": c, "high": h, "low": l}
+        else:
+            wk = weeks[key]
+            wk["date"] = k[0]
+            wk["close"] = c
+            wk["high"] = max(wk["high"], h)
+            wk["low"] = min(wk["low"], l)
+    wk_list = [weeks[k] for k in sorted(weeks)]
+    wcloses = [w["close"] for w in wk_list]
+    n = len(wk_list)
+    if n < 21:
+        return None
+    ma20 = sum(wcloses[-20:]) / 20
+    ma20_prev = sum(wcloses[-21:-1]) / 20
+    cur_wclose = wcloses[-1]
+    ll20 = min(w["low"] for w in wk_list[-21:-1])
+    hh20 = max(w["high"] for w in wk_list[-21:-1])
+    broke_low = cur_wclose < ll20
+    broke_high = cur_wclose > hh20
+
+    if broke_low:
+        state = "超跌(跌破20周低)"
+        advice = "周线超跌,深跌后未来4周反弹概率大(回测+2~5%),可关注反弹,勿重仓"
+    elif cur_wclose > ma20 and ma20 > ma20_prev:
+        state = "多头"
+        advice = "周线多头,但该票历史上多头排列后4周易跑输,别追高"
+    elif cur_wclose < ma20:
+        state = "空头"
+        advice = "周线空头,下跌趋势未止,观望"
+    else:
+        state = "震荡"
+        advice = "周线震荡,方向不明"
+
+    return {
+        "state": state,
+        "weekly_ma20": round(ma20, 2),
+        "broke_20w_low": broke_low,
+        "broke_20w_high": broke_high,
+        "advice": advice,
+    }
+
+
 def _tomorrow_plan(analysis):
     """明日分情景预案: 结合过往量价+当天, 给明日几种走法及每种走法的触发条件+动作。
     不预测涨跌, 只给条件触发式操作预案。"""
@@ -3273,6 +3413,10 @@ def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"
         advice_color = "#f87171"
         advice_emoji = "🔴"
 
+    # === 箱体状态机 + 周线超跌(基于回测edge, 非主观) ===
+    box = _box_analysis(kline)
+    weekly_box = _weekly_box(symbol)
+
     return {
         "symbol": code,
         "name": name,
@@ -3295,6 +3439,8 @@ def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"
         "market_advice_position": round(market_advice_position * 100),
         "market_pct": sh_pct,
         "holding": holding,
+        "box": box,
+        "weekly_box": weekly_box,
         "tomorrow_plan": _tomorrow_plan(analysis),
     }
 

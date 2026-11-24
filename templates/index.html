@@ -1397,6 +1397,19 @@ function renderTradingDecision(d,code){
         <div style="color:#6b81a5;margin-top:4px;font-size:10px">市场状态 <span style="font-weight:bold;color:${d.market_pct >= 0 ? '#34d399' : '#f87171'}">${d.market_state}</span>（${d.market_pct >= 0 ? '+' : ''}${d.market_pct}%）· 建议总仓位 <span style="font-weight:bold;color:#38bdf8">${d.market_advice_position}%</span></div>
       </div>
     </div>
+    ${d.box ? `
+    <div style="margin-top:10px;background:#0a1526;border-radius:6px;padding:10px">
+      <div style="font-size:12px;font-weight:700;color:#38bdf8;margin-bottom:4px">箱体状态机</div>
+      <div style="font-size:11px;color:#e2e8f0;margin-bottom:4px">状态：<b style="color:#38bdf8">${d.box.state}</b>${d.box.fake_breakout_risk ? ' <span style="color:' + (d.box.fake_breakout_risk==='高' ? '#f87171' : '#34d399') + '">(假突破风险' + d.box.fake_breakout_risk + ')</span>' : ''}</div>
+      <div style="font-size:11px;color:#8ea3c4">箱顶 <b style="color:#e2e8f0">${d.box.box_top}</b> · 箱底 <b style="color:#e2e8f0">${d.box.box_bottom}</b> · 宽度 ${d.box.box_width}% · 位置 ${Math.round(d.box.pos*100)}%${d.box.breakout_amp!=null ? ' · 突破幅度 ' + d.box.breakout_amp + '%' : ''} · 量比 ${d.box.vol_ratio}</div>
+      <div style="font-size:11px;color:#e2e8f0;margin-top:4px">${d.box.advice}</div>
+    </div>` : ''}
+    ${d.weekly_box ? `
+    <div style="margin-top:6px;background:#0a1526;border-radius:6px;padding:10px">
+      <div style="font-size:12px;font-weight:700;color:#a78bfa;margin-bottom:4px">周线状态</div>
+      <div style="font-size:11px;color:#e2e8f0;margin-bottom:4px"><b style="color:#a78bfa">${d.weekly_box.state}</b> · 周MA20 ${d.weekly_box.weekly_ma20}</div>
+      <div style="font-size:11px;color:#e2e8f0">${d.weekly_box.advice}</div>
+    </div>` : ''}
     ${d.tomorrow_plan ? `
     <div style="margin-top:10px;background:#0a1526;border-radius:6px;padding:10px">
       <div style="font-size:12px;font-weight:700;color:#fbbf24;margin-bottom:4px">明日分情景预案</div>
