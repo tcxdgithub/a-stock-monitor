@@ -3150,41 +3150,20 @@ def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"
     fear_greed = sentiment.get("fear_greed", {})
     strength = overall.get("strength", 50)
 
-    # 3. 获取板块资金流向（带缓存）
-    sector_data = _get_cached_data("sector_flow", lambda: _sina(0, 30))
-    concept_data = _get_cached_data("concept_flow", lambda: _sina(1, 30))
-
-    # 获取权重配置
-    weights = WEIGHT_PRESETS.get(weight_preset, WEIGHT_PRESETS["balanced"])
-    # 砍公共维度：个股评分只保留技术+估值，归一化到 1.0（大盘/情绪/板块不再计入个股分）
-    _w_tech = weights.get("technical", 0.25)
-    _w_val = weights.get("valuation", 0.15)
-    _base = _w_tech + _w_val
-    weights = dict(weights)
-    weights["technical"] = _w_tech / _base
-    weights["valuation"] = _w_val / _base
-    weights["market"] = weights["sentiment"] = weights["sector"] = 0.0
-
-    # 4. 回测证据驱动的评分（替代旧版"均线+量价+估值"主观打分）
-    # 旧版 score 由均线排列/量价/PE-PB 主观打分，回测证明这些因子无效甚至反向：
-    #   放量突破MA5(R8) edge -0.25%、价涨量缩(R10) 无效、均线排列无显著edge。
-    # 新版 score 只由"触发规则的3日超额收益 edge3"驱动，诚实反映该票可预期的
-    # 涨跌倾向；大部分时间 score 在 50 附近(无edge=观望)，极端信号才显著偏离。
-    pos_signals = []   # 正面信号(edge>0)
-    neg_signals = []   # 负面信号(edge<0)
+    # 3. 信号解释层：用触发规则的 edge 说明"为什么是这个概率"
+    # 评分不再由主观因子(均线/量价/PE-PB)决定，而是直接用 walk-forward 验证过的
+    # 3日上涨概率(prob_up_3d)。这里只把触发规则按 edge 正负分类，作为概率的解释。
+    pos_signals = []   # 正面信号(edge>0.3)
+    neg_signals = []   # 负面信号(edge<-0.3)
     neu_signals = []   # 中性信号(无显著edge)
     rule_edges = _load_rule_edges()
-    score = 50.0
     for s in signals:
         rid = _rule_text_to_id(s.get("text", ""))
         edge = rule_edges.get(rid, 0.0)
-        contrib = max(-20.0, min(20.0, edge * 10.0))  # edge每1%≈10分，单条封顶±20
-        if contrib > 0.5:
+        if edge > 0.3:
             pos_signals.append({"text": s["text"], "detail": f"回测3日edge {edge:+.2f}%"})
-            score += contrib
-        elif contrib < -0.5:
+        elif edge < -0.3:
             neg_signals.append({"text": s["text"], "detail": f"回测3日edge {edge:+.2f}%"})
-            score += contrib
         else:
             neu_signals.append({"text": s["text"], "detail": f"回测edge {edge:+.2f}%，无显著方向"})
 
@@ -3240,8 +3219,12 @@ def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"
     except Exception:
         pe, pb = 0, 0
 
-    # === 限制分数范围 ===
-    score = max(0, min(100, round(score)))
+    # === 评分 = 3日上涨概率（walk-forward 校准验证过单调有效）===
+    # prob_up_3d 已在 _analyze_stock 用规则胜率证据算出；walk-forward 校准证明：
+    #   概率≥55% 实际3日胜率60.7%、45-55% 接近随机、<40% 胜率<40%。
+    # 用概率替代旧版主观 score，评分和建议严格一致，不再有"评分高但不涨"的割裂。
+    prob_up = a.get("prob_up_3d", 50)
+    score = max(0, min(100, round(prob_up)))
 
     # === 生成建议 ===
     stop_loss_map = {"conservative": 0.02, "moderate": 0.03, "aggressive": 0.05}
@@ -3270,24 +3253,23 @@ def _get_trading_decision(symbol, risk_pref="moderate", weight_preset="balanced"
             "equal_breakeven": round((latest + (_pos.get("cost") or latest)) / 2, 2),
         }
 
-    if score >= 70:
-        suggestion = "可以买入"
+    # === 交易铁律：概率阈值驱动（walk-forward 校准验证）===
+    # ≥55% 历史胜率60.7% → 轻仓做多；45-55% 接近随机 → 观望不操作；
+    # 40-45% 收益转负 → 偏空减仓；<40% 胜率<40% → 规避/卖出。
+    if prob_up >= 55:
+        suggestion = "轻仓做多"
         advice_color = "#34d399"
         advice_emoji = "✅"
-    elif score >= 55:
-        suggestion = "谨慎买入"
-        advice_color = "#f59e0b"
-        advice_emoji = "⚠️"
-    elif score >= 45:
+    elif prob_up >= 45:
         suggestion = "观望"
         advice_color = "#8ea3c4"
         advice_emoji = "⏸️"
-    elif score >= 30:
-        suggestion = "谨慎持有/减仓"
+    elif prob_up >= 40:
+        suggestion = "偏空减仓"
         advice_color = "#f59e0b"
         advice_emoji = "⚠️"
     else:
-        suggestion = "建议卖出"
+        suggestion = "规避/卖出"
         advice_color = "#f87171"
         advice_emoji = "🔴"
 
