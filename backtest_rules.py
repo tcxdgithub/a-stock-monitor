@@ -408,6 +408,7 @@ def run_backtest():
             total_windows += 1
             all_ret3.append(fwd[3])
             window_recs.append({
+                "date": data[T]["date"],
                 "sigs": [(s["id"], s["weight"]) for s in signals],
                 "fwd3": fwd[3],
             })
@@ -484,6 +485,53 @@ def run_backtest():
         "ret3": no_sig["ret3"] / no_sig["n"] if no_sig["n"] else 0,
     })
 
+    # ---- Walk-forward 概率校准(严格避免前视偏差) ----
+    # in-sample 校准用全样本胜率回填，有乐观偏差。walk-forward 按日期滚动：
+    # 每个窗口只用"日期早于当前"的历史窗口估计规则胜率，再给当前窗口打分，
+    # 验证"当时实际可知的概率"对 T+3 的预测力还剩多少。这是可交易性的真实上限。
+    wf_sorted = sorted(window_recs, key=lambda r: r.get("date", ""))
+    rolling = {}  # rid -> [n, wins]
+    wf_calib = {b: {"n": 0, "wins": 0, "ret3": 0.0} for b in BUCKETS}
+    wf_no_sig = {"n": 0, "wins": 0, "ret3": 0.0}
+    for rec in wf_sorted:
+        if rec["sigs"]:
+            prob = 50.0
+            for rid, weight in rec["sigs"]:
+                nw = rolling.get(rid)
+                w3 = (nw[1] / nw[0] * 100) if nw and nw[0] >= 10 else 44.0
+                prob += (w3 - 50.0) * (weight / 35.0)
+            prob = max(0.0, min(100.0, prob))
+            for b in BUCKETS:
+                if b[0] <= prob < b[1]:
+                    wf_calib[b]["n"] += 1
+                    wf_calib[b]["wins"] += 1 if rec["fwd3"] > 0 else 0
+                    wf_calib[b]["ret3"] += rec["fwd3"]
+                    break
+        else:
+            wf_no_sig["n"] += 1
+            wf_no_sig["wins"] += 1 if rec["fwd3"] > 0 else 0
+            wf_no_sig["ret3"] += rec["fwd3"]
+        # 用本窗口结果更新滚动统计(供后续窗口)
+        for rid, _ in rec["sigs"]:
+            nw = rolling.setdefault(rid, [0, 0])
+            nw[0] += 1
+            if rec["fwd3"] > 0:
+                nw[1] += 1
+    wf_rows = []
+    for b in BUCKETS:
+        c = wf_calib[b]
+        if c["n"] > 0:
+            wf_rows.append({
+                "bucket": f"{b[0]}-{b[1] if b[1] <= 100 else 100}%",
+                "n": c["n"], "win3": c["wins"] / c["n"] * 100,
+                "ret3": c["ret3"] / c["n"],
+            })
+    wf_rows.append({
+        "bucket": "无信号(参照)", "n": wf_no_sig["n"],
+        "win3": wf_no_sig["wins"] / wf_no_sig["n"] * 100 if wf_no_sig["n"] else 0,
+        "ret3": wf_no_sig["ret3"] / wf_no_sig["n"] if wf_no_sig["n"] else 0,
+    })
+
     # ---- 规则统计 ----
     rule_rows = []
     for rid, rs in rule_stats.items():
@@ -513,6 +561,7 @@ def run_backtest():
         "rules": rule_rows,
         "behaviors": behav_rows,
         "calibration": calib_rows,
+        "walk_forward_calibration": wf_rows,
         "state_dist": {
             "states": {
                 st: {
@@ -561,6 +610,11 @@ def print_report(r):
     print("\n【概率校准】  概率高→实际3日上涨率应越高(单调)。in-sample胜率,轻微乐观偏差")
     print(f"{'概率区间':<12}{'次数':>8}{'实际3日胜率%':>12}{'实际3日收益%':>12}")
     for c in r.get("calibration", []):
+        print(f"{c['bucket']:<12}{c['n']:>8}{c['win3']:>12.1f}{c['ret3']:>12.3f}")
+
+    print("\n【Walk-forward校准】  严格避免前视偏差(只用历史窗口估胜率)。这才是真实可交易性")
+    print(f"{'概率区间':<12}{'次数':>8}{'实际3日胜率%':>12}{'实际3日收益%':>12}")
+    for c in r.get("walk_forward_calibration", []):
         print(f"{c['bucket']:<12}{c['n']:>8}{c['win3']:>12.1f}{c['ret3']:>12.3f}")
 
 

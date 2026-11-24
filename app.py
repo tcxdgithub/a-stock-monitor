@@ -903,11 +903,13 @@ def _load_rule_stats():
 
 
 _rule_edges = None
+_EDGE_MIN_N = 30  # 回测触发次数门槛：n 低于此值的规则 edge 视为不可靠，计 0 分
 
 
 def _load_rule_edges():
     """加载每条回测规则的3日超额收益 edge3(触发后3日均收益 - 全样本基准)。
     正=该信号出现后跑赢大盘(买点方向)，负=跑输大盘(规避方向)。
+    小样本规则(n<30)edge 不可靠，归零处理，避免噪音污染评分。
     这是评分系统的唯一事实来源，替代旧版均线+量价+估值的主观打分。"""
     global _rule_edges
     if _rule_edges is not None:
@@ -919,7 +921,8 @@ def _load_rule_edges():
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             for r in data.get("rules", []):
-                _rule_edges[r.get("id", "")] = r.get("edge3", 0.0)
+                n = r.get("n", 0)
+                _rule_edges[r.get("id", "")] = r.get("edge3", 0.0) if n >= _EDGE_MIN_N else 0.0
     except Exception:
         pass
     return _rule_edges
