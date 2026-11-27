@@ -1,0 +1,450 @@
+{
+  "daily_mom_1": {
+    "freq": "daily",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后全负(因子动物园+多重检验证伪)",
+    "evidence": [
+      "factor_zoo.py",
+      "factor_layer.py"
+    ]
+  },
+  "daily_mom_5": {
+    "freq": "daily",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后全负(因子动物园+多重检验证伪)",
+    "evidence": [
+      "factor_zoo.py",
+      "factor_layer.py"
+    ]
+  },
+  "daily_mom_20": {
+    "freq": "daily",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后全负(因子动物园+多重检验证伪)",
+    "evidence": [
+      "factor_zoo.py",
+      "factor_layer.py"
+    ]
+  },
+  "daily_mom_60": {
+    "freq": "daily",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后全负(因子动物园+多重检验证伪)",
+    "evidence": [
+      "factor_zoo.py",
+      "factor_layer.py"
+    ]
+  },
+  "daily_rev_1": {
+    "freq": "daily",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后全负(因子动物园+多重检验证伪)",
+    "evidence": [
+      "factor_zoo.py",
+      "factor_layer.py"
+    ]
+  },
+  "daily_rev_5": {
+    "freq": "daily",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后全负(因子动物园+多重检验证伪)",
+    "evidence": [
+      "factor_zoo.py",
+      "factor_layer.py"
+    ]
+  },
+  "daily_vol_20": {
+    "freq": "daily",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后全负(因子动物园+多重检验证伪)",
+    "evidence": [
+      "factor_zoo.py",
+      "factor_layer.py"
+    ]
+  },
+  "daily_vol_chg": {
+    "freq": "daily",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后全负(因子动物园+多重检验证伪)",
+    "evidence": [
+      "factor_zoo.py",
+      "factor_layer.py"
+    ]
+  },
+  "daily_amp_20": {
+    "freq": "daily",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后全负(因子动物园+多重检验证伪)",
+    "evidence": [
+      "factor_zoo.py",
+      "factor_layer.py"
+    ]
+  },
+  "daily_vr_5": {
+    "freq": "daily",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后全负(因子动物园+多重检验证伪)",
+    "evidence": [
+      "factor_zoo.py",
+      "factor_layer.py"
+    ]
+  },
+  "daily_vr_20": {
+    "freq": "daily",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后全负(因子动物园+多重检验证伪)",
+    "evidence": [
+      "factor_zoo.py",
+      "factor_layer.py"
+    ]
+  },
+  "daily_vol_chg_20": {
+    "freq": "daily",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后全负(因子动物园+多重检验证伪)",
+    "evidence": [
+      "factor_zoo.py",
+      "factor_layer.py"
+    ]
+  },
+  "daily_hl_dist": {
+    "freq": "daily",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后全负(因子动物园+多重检验证伪)",
+    "evidence": [
+      "factor_zoo.py",
+      "factor_layer.py"
+    ]
+  },
+  "daily_rsi_14": {
+    "freq": "daily",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后全负(因子动物园+多重检验证伪)",
+    "evidence": [
+      "factor_zoo.py",
+      "factor_layer.py"
+    ]
+  },
+  "daily_ma_dist": {
+    "freq": "daily",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后全负(因子动物园+多重检验证伪)",
+    "evidence": [
+      "factor_zoo.py",
+      "factor_layer.py"
+    ]
+  },
+  "daily_ma_slope": {
+    "freq": "daily",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后全负(因子动物园+多重检验证伪)",
+    "evidence": [
+      "factor_zoo.py",
+      "factor_layer.py"
+    ]
+  },
+  "weekly_w_mom_4": {
+    "freq": "weekly",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后非正或p>=0.05",
+    "report": {
+      "train_n": 1580,
+      "test_n": 1743,
+      "long_side": "Q5高值",
+      "test_long_ret": 0.5738567654277706,
+      "test_p": 0.05422618118758692,
+      "train_ls": -1.0111447411684997,
+      "test_ls": -1.879800718722725,
+      "gate1_positive_long": false,
+      "gate2_stable_direction": true,
+      "reason": "做多端扣成本后非正或p>=0.05"
+    },
+    "evidence": [
+      "factor_funnel.py"
+    ]
+  },
+  "weekly_w_mom_8": {
+    "freq": "weekly",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后非正或p>=0.05",
+    "report": {
+      "train_n": 1500,
+      "test_n": 1660,
+      "long_side": "Q1低值",
+      "test_long_ret": -1.1390311350670195,
+      "test_p": 1.2795701640401311e-06,
+      "train_ls": 0.08300321890132906,
+      "test_ls": -1.0910227983201852,
+      "gate1_positive_long": false,
+      "gate2_stable_direction": false,
+      "reason": "做多端扣成本后非正或p>=0.05"
+    },
+    "evidence": [
+      "factor_funnel.py"
+    ]
+  },
+  "weekly_w_mom_20": {
+    "freq": "weekly",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后非正或p>=0.05",
+    "report": {
+      "train_n": 1260,
+      "test_n": 1743,
+      "long_side": "Q5高值",
+      "test_long_ret": 0.34111110549086654,
+      "test_p": 0.2626867241475964,
+      "train_ls": -0.460231700478017,
+      "test_ls": -0.8285777590444777,
+      "gate1_positive_long": false,
+      "gate2_stable_direction": true,
+      "reason": "做多端扣成本后非正或p>=0.05"
+    },
+    "evidence": [
+      "factor_funnel.py"
+    ]
+  },
+  "weekly_w_rev_4": {
+    "freq": "weekly",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后非正或p>=0.05",
+    "report": {
+      "train_n": 1580,
+      "test_n": 1660,
+      "long_side": "Q1低值",
+      "test_long_ret": 0.6043876595779659,
+      "test_p": 0.05013380316380881,
+      "train_ls": 0.9406093271754586,
+      "test_ls": 1.883978551824426,
+      "gate1_positive_long": false,
+      "gate2_stable_direction": true,
+      "reason": "做多端扣成本后非正或p>=0.05"
+    },
+    "evidence": [
+      "factor_funnel.py"
+    ]
+  },
+  "weekly_w_vol_20": {
+    "freq": "weekly",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后非正或p>=0.05",
+    "report": {
+      "train_n": 1260,
+      "test_n": 1660,
+      "long_side": "Q1低值",
+      "test_long_ret": -0.19297452962696918,
+      "test_p": 0.13979058845864145,
+      "train_ls": 1.503085000576627,
+      "test_ls": -0.011129720861914091,
+      "gate1_positive_long": false,
+      "gate2_stable_direction": false,
+      "reason": "做多端扣成本后非正或p>=0.05"
+    },
+    "evidence": [
+      "factor_funnel.py"
+    ]
+  },
+  "weekly_w_vol_chg": {
+    "freq": "weekly",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后非正或p>=0.05",
+    "report": {
+      "train_n": 860,
+      "test_n": 1660,
+      "long_side": "Q1低值",
+      "test_long_ret": -0.4426331577266289,
+      "test_p": 0.04133417063167216,
+      "train_ls": 0.913012018366286,
+      "test_ls": -0.19675367641148045,
+      "gate1_positive_long": false,
+      "gate2_stable_direction": false,
+      "reason": "做多端扣成本后非正或p>=0.05"
+    },
+    "evidence": [
+      "factor_funnel.py"
+    ]
+  },
+  "weekly_w_vr_4": {
+    "freq": "weekly",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后非正或p>=0.05",
+    "report": {
+      "train_n": 1580,
+      "test_n": 1743,
+      "long_side": "Q5高值",
+      "test_long_ret": -0.21053561943585591,
+      "test_p": 0.4103374172152047,
+      "train_ls": -0.902331683631166,
+      "test_ls": -0.08180901756707715,
+      "gate1_positive_long": false,
+      "gate2_stable_direction": true,
+      "reason": "做多端扣成本后非正或p>=0.05"
+    },
+    "evidence": [
+      "factor_funnel.py"
+    ]
+  },
+  "weekly_w_vr_20": {
+    "freq": "weekly",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后非正或p>=0.05",
+    "report": {
+      "train_n": 1260,
+      "test_n": 1743,
+      "long_side": "Q5高值",
+      "test_long_ret": 0.09357530662846406,
+      "test_p": 0.7295487260175129,
+      "train_ls": -0.06739608726167988,
+      "test_ls": -1.001097453024378,
+      "gate1_positive_long": false,
+      "gate2_stable_direction": true,
+      "reason": "做多端扣成本后非正或p>=0.05"
+    },
+    "evidence": [
+      "factor_funnel.py"
+    ]
+  },
+  "weekly_w_hl_dist": {
+    "freq": "weekly",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后非正或p>=0.05",
+    "report": {
+      "train_n": 620,
+      "test_n": 1660,
+      "long_side": "Q1低值",
+      "test_long_ret": -0.7107828442798986,
+      "test_p": 0.002474787163299715,
+      "train_ls": 3.924705841824657,
+      "test_ls": -1.479517337737605,
+      "gate1_positive_long": false,
+      "gate2_stable_direction": false,
+      "reason": "做多端扣成本后非正或p>=0.05"
+    },
+    "evidence": [
+      "factor_funnel.py"
+    ]
+  },
+  "weekly_w_ma_dist": {
+    "freq": "weekly",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后非正或p>=0.05",
+    "report": {
+      "train_n": 1260,
+      "test_n": 1660,
+      "long_side": "Q1低值",
+      "test_long_ret": -1.0618227670602765,
+      "test_p": 1.0373355036842894e-05,
+      "train_ls": 0.005804624202598885,
+      "test_ls": -1.6775633080461057,
+      "gate1_positive_long": false,
+      "gate2_stable_direction": false,
+      "reason": "做多端扣成本后非正或p>=0.05"
+    },
+    "evidence": [
+      "factor_funnel.py"
+    ]
+  },
+  "weekly_w_amp_20": {
+    "freq": "weekly",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后非正或p>=0.05",
+    "report": {
+      "train_n": 1260,
+      "test_n": 1660,
+      "long_side": "Q1低值",
+      "test_long_ret": -0.20032824233735252,
+      "test_p": 0.09977884128281111,
+      "train_ls": 1.2162442975410892,
+      "test_ls": -0.021176638569366822,
+      "gate1_positive_long": false,
+      "gate2_stable_direction": false,
+      "reason": "做多端扣成本后非正或p>=0.05"
+    },
+    "evidence": [
+      "factor_funnel.py"
+    ]
+  },
+  "weekly_w_ma_slope": {
+    "freq": "weekly",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "做多端扣成本后非正或p>=0.05",
+    "report": {
+      "train_n": 1200,
+      "test_n": 1660,
+      "long_side": "Q1低值",
+      "test_long_ret": -0.4009036564176102,
+      "test_p": 0.08480180784459715,
+      "train_ls": 0.2232879512589238,
+      "test_ls": -0.556833507023616,
+      "gate1_positive_long": false,
+      "gate2_stable_direction": false,
+      "reason": "做多端扣成本后非正或p>=0.05"
+    },
+    "evidence": [
+      "factor_funnel.py"
+    ]
+  },
+  "weekly_event_突破20周高": {
+    "freq": "weekly",
+    "data": "price_volume",
+    "status": "alive",
+    "reason": "训练n=343 +0.55% p=0.443 测试n=372 +2.46% p=0.002",
+    "evidence": [
+      "factor_events.py"
+    ]
+  },
+  "weekly_event_跌破20周低": {
+    "freq": "weekly",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "训练n=410 +4.72% p=0.000 测试n=657 -1.01% p=0.004",
+    "evidence": [
+      "factor_events.py"
+    ]
+  },
+  "weekly_event_金叉": {
+    "freq": "weekly",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "训练n=319 +1.39% p=0.066 测试n=314 +0.06% p=0.915",
+    "evidence": [
+      "factor_events.py"
+    ]
+  },
+  "weekly_event_死叉": {
+    "freq": "weekly",
+    "data": "price_volume",
+    "status": "dead",
+    "reason": "训练n=315 +0.23% p=0.725 测试n=281 -1.56% p=0.003",
+    "evidence": [
+      "factor_events.py"
+    ]
+  }
+}
